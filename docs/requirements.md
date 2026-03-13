@@ -67,6 +67,15 @@
 
 ---
 
+## 1.4 使用前提（MVP 约束）
+
+| 用户类型 | MVP 前提条件 | 后续迭代扩展 |
+|----------|-------------|-------------|
+| 所有用户 | 需持有有效的 **Claude API Key**（Anthropic），并在首次启动时完成配置 | 后续支持 OpenClaw 本地运行作为零网络依赖的离线 Provider 选项 |
+| 所有用户 | MVP 阶段需要稳定的网络连接以调用 Claude API | OpenClaw Provider 接入后可支持完全离线使用 |
+
+---
+
 ## 2. 用户痛点
 
 ### 直接写代码的局限
@@ -100,7 +109,12 @@
 | M02 | **SkillApp 管理中心** | 列表展示所有已生成的 SkillApp，支持启动、卸载操作 |
 | M03 | **自然语言意图输入** | 用户通过自然语言描述需求，系统理解并启动生成流程 |
 | M04 | **应用生成窗口（交互式向导）** | 提供引导式的 Skill-to-App 生成交互界面，支持多轮交互调整 |
-| M05 | **OpenClaw 规划引擎集成** | 自动分析 Skill 能力，生成 SkillApp 的设计方案（页面布局、交互逻辑） |
+| M05 | **AI Provider 规划引擎集成** | 自动分析 Skill 能力，生成 SkillApp 的设计方案（页面布局、交互逻辑）；MVP 使用 Claude API（云端），后续支持 OpenClaw（本地）作为可选 Provider |
+| M05a | **AI Provider 可用性检查** | 系统启动时检查 AI Provider 是否可用（MVP：Claude API 网络连通性及 API Key 有效性）；不可用时向用户提示并阻止生成流程 |
+| M05b | **API Key 管理** | 用户可在设置中配置 Claude API Key；Key 本地加密存储（使用 OS Keychain 或 electron-safeStorage） |
+| M05c | **AI Provider 选择** | 用户可在设置中选择当前使用的 AI Provider；MVP 仅提供 Claude API，后续迭代新增 OpenClaw 本地 Provider |
+| M05d | **网络状态感知** | 使用 Claude API 时，界面显示当前网络连接状态；断网时阻止生成并给出清晰提示 |
+| M05e | **AI Provider 切换** | 系统架构支持 AI Provider 抽象层，允许在 Claude API 与 OpenClaw 之间切换，切换后无需修改核心生成逻辑 |
 | M06 | **代码生成与编译打包** | 将设计方案自动转化为 Electron 应用代码，并完成编译打包 |
 | M07 | **原地变形（窗口无缝过渡）** | 生成完成后，生成窗口直接变形为可用的 SkillApp 主界面 |
 | M08 | **SkillApp 独立运行** | 每个 SkillApp 作为独立 Electron 应用运行，拥有独立窗口和进程 |
@@ -116,7 +130,7 @@
 | 编号 | 需求 | 说明 |
 |------|------|------|
 | S03 | **多 Skill 组合生成** | 一个 SkillApp 可组合多个 Skill，生成具有复合能力的应用 |
-| S07 | **生成代码可读性保障** | OpenClaw 生成的 SkillApp 代码应遵循清晰的目录结构和命名规范，开发者可阅读、查看和手动接管生成代码 |
+| S07 | **生成代码可读性保障** | AI Provider 生成的 SkillApp 代码应遵循清晰的目录结构和命名规范，开发者可阅读、查看和手动接管生成代码 |
 | S04 | **设计方案预览与调整** | 生成前向用户展示 SkillApp 的布局和功能方案，支持用户手动调整后再生成 |
 | S05 | **Skill 联网市场** ⚠️ 当前版本不含 | 用户可在线浏览和下载社区共享的 Skill |
 | S06 | **窗口调度管理** | IntentOS Desktop 支持管理多个 SkillApp 窗口的排列与切换 |
@@ -137,7 +151,7 @@
 
 ### 性能
 
-- **生成响应时间**：OpenClaw 完成初步设计方案的时间应在 30 秒内（P90），代码生成+编译完整流程不超过 3 分钟
+- **生成响应时间**：AI Provider 完成初步设计方案的时间应在 30 秒内（P90）（MVP Claude API 云端调用与原 OpenClaw 要求一致），代码生成+编译完整流程不超过 3 分钟
 - **启动时间**：IntentOS Desktop 冷启动时间不超过 5 秒；SkillApp 启动时间不超过 3 秒
 - **热更新延迟**：SkillApp 热更新生效时间不超过 10 秒
 - **并发运行**：系统应支持同时运行至少 5 个独立 SkillApp，不出现显著性能下降
@@ -146,9 +160,11 @@
 
 - **Skill 沙箱隔离**：各 SkillApp 运行在独立进程中，相互之间不能直接访问对方的内存和数据
 - **资源访问权限控制**：SkillApp 通过 MCP 接口访问系统资源时，需经过用户授权或权限声明，不得静默访问敏感目录
-- **代码生成审查**：OpenClaw 生成的代码在编译前应经过基本安全扫描，防止恶意代码注入
+- **代码生成审查**：AI Provider 生成的代码在编译前应经过基本安全扫描，防止恶意代码注入
 - **Skill 来源可信度**：从 Skill 市场下载的 Skill 应标注来源和签名信息，用户可识别可信来源
-- **本地数据保护**：用户的意图描述、应用数据默认存储在本地，不上传至外部服务器（明确告知时除外）
+- **API Key 本地加密存储**：Claude API Key 必须使用 OS Keychain 或 electron-safeStorage 加密存储，不得以明文写入文件系统或配置文件
+- **云端隐私告知**：使用 Claude API（云端）时，UI 必须明确告知用户当前意图描述和 Skill 信息将发送至 Anthropic 服务器；用户首次配置时需显式确认
+- **本地数据保护**：用户的意图描述、应用数据默认存储在本地，不上传至外部服务器（使用 Claude API 时除外，届时须经用户知情同意）
 - **网络出站访问控制**：SkillApp 的网络出站请求应受到权限声明约束，用户可查看和控制每个 SkillApp 的网络访问范围，防止 Skill 恶意外传本地数据
 
 ### 可用性
@@ -182,7 +198,8 @@
 
 | 约束项 | 说明 |
 |--------|------|
-| **OpenClaw 版本** | IntentOS 内核层强依赖 OpenClaw 框架；系统设计需与 OpenClaw 提供的规划引擎和代码生成引擎接口兼容，版本升级需经过回归验证 |
+| **Anthropic API 协议版本（MVP）** | IntentOS 内核层通过 AI Provider 抽象层调用 AI 能力；MVP 实现依赖 Anthropic Claude API，需声明兼容的 API 版本（`anthropic-version` header），版本升级需经过回归验证 |
+| **OpenClaw 版本（后续迭代）** | OpenClaw 作为本地 Provider 选项，接入时需与 OpenClaw 提供的规划引擎和代码生成引擎接口兼容；版本升级需经过回归验证（MVP 阶段不强制要求） |
 | **Electron 版本** | IntentOS Desktop 和生成的 SkillApp 均基于 Electron 构建；需指定最低 Electron 版本（建议跟随 Electron 稳定版本），且 Desktop 与 SkillApp 使用的 Electron 版本可以不同 |
 | **Node.js 版本** | Electron 内置 Node.js 运行时，代码生成和编译工具链依赖 Node.js 版本需与 Electron 版本配套 |
 | **MCP 协议版本** | 宿主 OS 资源访问通过 MCP 协议实现，系统需声明兼容的 MCP 协议版本范围，版本变更需保持向后兼容 |
@@ -199,7 +216,7 @@
 
 - **进程隔离**：每个 SkillApp 必须运行在独立 Electron 进程中，不允许共享渲染进程
 - **资源访问路径唯一性**：所有底层资源访问必须经过 MCP 接口，不允许 SkillApp 直接绕过 IntentOS 层调用系统 API
-- **Skill 原子性**：Skill 是系统最小可复用单位，单个 Skill 内部逻辑不可再拆分；Skill 间通信必须通过 OpenClaw 提供的调度接口进行
+- **Skill 原子性**：Skill 是系统最小可复用单位，单个 Skill 内部逻辑不可再拆分；Skill 间通信必须通过 IntentOS AI Provider 层提供的调度接口进行
 
 ### 设计约束
 
