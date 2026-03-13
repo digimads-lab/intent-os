@@ -1,6 +1,6 @@
 # IntentOS SkillApp 运行时与隔离技术规格
 
-> **版本**：v1.0 | **日期**：2026-03-12
+> **版本**：v1.0 | **日期**：2026-03-13
 > **状态**：正式文档
 > **对应模块**：M-06 SkillApp 运行时
 
@@ -64,7 +64,7 @@ skillapps/
     ├── preload.js                    # 渲染进程预加载脚本（暴露运行时 API）
     ├── manifest.json                 # SkillApp 元数据（appId, 版本, 依赖 Skill 列表, 权限声明）
     ├── src/
-    │   ├── app/                      # OpenClaw 生成的业务代码
+    │   ├── app/                      # AI Provider 生成的业务代码
     │   │   ├── pages/                # 页面组件
     │   │   │   ├── ImportPage.jsx
     │   │   │   ├── ConfigPage.jsx
@@ -151,7 +151,7 @@ sequenceDiagram
     RT_M->>RT_M: 1. 读取 manifest.json → 获取 appId
     RT_M->>RT_M: 2. 初始化日志系统
     RT_M->>IOS: 3. 建立 IPC 连接（Unix Socket / Named Pipe）
-    IOS-->>RT_M: 握手确认（含 OpenClaw 通信层端点信息）
+    IOS-->>RT_M: 握手确认（含 AI Provider 通信层端点信息）
     RT_M->>RT_M: 4. 加载权限缓存（.skillapp/permissions.json）
     RT_M->>RT_M: 5. 检查待应用的热更新包（.skillapp/updates/）
     RT_M->>E: 初始化完成，创建 BrowserWindow
@@ -215,7 +215,7 @@ contextBridge.exposeInMainWorld('intentOS', {
 **业务代码调用方式**：
 
 ```javascript
-// SkillApp 业务代码（由 OpenClaw 生成）
+// SkillApp 业务代码（由 AI Provider 生成）
 async function cleanData(filePath) {
   const result = await window.intentOS.callSkill(
     'data-cleaner',
@@ -237,8 +237,8 @@ flowchart LR
     A[SkillApp 业务代码] -->|window.intentOS.callSkill| B[preload.js<br/>ipcRenderer.invoke]
     B -->|Electron IPC| C[SkillApp 主进程<br/>Runtime 主进程模块]
     C -->|Unix Socket /<br/>Named Pipe| D[IntentOS Desktop<br/>主进程]
-    D -->|进程内调用| E[M-04<br/>OpenClaw 通信层]
-    E -->|协议通信| F[OpenClaw 内核<br/>Skill 执行环境]
+    D -->|进程内调用| E[M-04<br/>AI Provider 通信层]
+    E -->|IPC → AI Provider| F[AI 后端<br/>Skill 执行环境]
 
     style A fill:#e1f5fe
     style C fill:#fff3e0
@@ -253,8 +253,8 @@ flowchart LR
 | 1 | 渲染进程业务代码 | preload.js | `window.intentOS.callSkill()` | 受 contextBridge 保护的安全通道 |
 | 2 | preload.js | SkillApp Electron 主进程 | `ipcRenderer.invoke` → `ipcMain.handle` | Electron 内置 IPC，进程内通信 |
 | 3 | Runtime 主进程模块 | IntentOS Desktop 主进程 | Unix Socket (macOS/Linux) / Named Pipe (Windows) | 跨进程通信，JSON-RPC 2.0 协议 |
-| 4 | IntentOS Desktop | M-04 OpenClaw 通信层 | 进程内函数调用 | `sendSkillCallRequest()` |
-| 5 | M-04 通信层 | OpenClaw 内核 | OpenClaw 内部协议 | Skill 执行并返回结果 |
+| 4 | IntentOS Desktop | M-04 AI Provider 通信层 | 进程内函数调用 | `executeSkill()` |
+| 5 | M-04 AI Provider 通信层 | AI 后端 | AI Provider 内部协议 | Skill 执行并返回结果 |
 
 > **前置依赖校验**：Desktop 主进程在处理 `skill.call` 时，会先调用 M-02 的 `checkDependencies()` 校验目标 Skill 依赖可用（对应 IPC 方法 `skill.checkDependency`），确认依赖满足后再转发到 M-04 通信层执行。
 
@@ -308,7 +308,7 @@ interface IPCNotification {
 | `resource.access` | SkillApp → IntentOS | 访问 MCP 资源 | `accessResource()` |
 | `permission.request` | SkillApp → IntentOS | 请求用户授权 | `requestPermission()` |
 | `status.report` | SkillApp → IntentOS | 汇报运行状态 | `reportStatus()` |
-| `hotupdate.push` | IntentOS → SkillApp | 推送热更新包 | `applyHotUpdate()` |
+| `hotUpdate` | IntentOS → SkillApp | 推送热更新包 | `applyHotUpdate()` |
 | `lifecycle.stop` | IntentOS → SkillApp | 请求优雅退出 | - |
 | `skill.error` | IntentOS → SkillApp | Skill 执行错误通知 | `onSkillError` |
 
@@ -317,7 +317,7 @@ interface IPCNotification {
 **所有 Skill 调用均为异步（Promise-based）**。
 
 **理由**：
-1. Skill 调用链路跨越 4 个通信边界（渲染→主进程→Desktop→OpenClaw），任何环节都可能有延迟
+1. Skill 调用链路跨越 4 个通信边界（渲染→主进程→Desktop→AI Provider（M-04 通信层）），任何环节都可能有延迟
 2. Skill 执行本身可能涉及 I/O 操作（文件读写、网络请求），天然是异步操作
 3. 同步调用会阻塞渲染进程 UI 线程，导致 SkillApp 界面卡死
 
@@ -341,7 +341,7 @@ interface TimeoutConfig {
 |----------|-----------|----------|----------|
 | IPC 连接失败 | 1000-1099 | 自动重连 3 次（间隔 1s, 2s, 4s），失败后通知用户 | 「与系统连接断开，正在重连...」 |
 | Skill 调用超时 | 2000-2099 | 返回超时错误给业务代码，由业务代码决定是否重试 | 由 SkillApp UI 展示「操作超时，请重试」 |
-| Skill 执行错误 | 2100-2199 | 透传 OpenClaw 返回的错误信息 | 由 SkillApp UI 展示友好错误提示 |
+| Skill 执行错误 | 2100-2199 | 透传 AI Provider（ClaudeAPIProvider / future: OpenClawProvider）返回的错误信息 | 由 SkillApp UI 展示友好错误提示 |
 | 权限被拒绝 | 3000-3099 | 返回权限拒绝错误 | 功能不可用提示 |
 | MCP 资源错误 | 4000-4099 | 透传 MCP 层错误 | 「文件访问失败」等具体提示 |
 
@@ -466,9 +466,12 @@ interface UpdatePackage {
   fromVersion: string;         // 当前版本（用于校验）
   toVersion: string;           // 目标版本
   timestamp: number;
-  modules: ModuleUpdate[];     // 模块级更新列表
-  manifest: ManifestDelta;     // manifest.json 的增量变更
+  changedFiles: FileUpdate[];
+  addedFiles: FileUpdate[];
+  deletedFiles: string[];
+  manifestDelta?: ManifestDelta;
   checksum: string;            // 整包 SHA-256 校验
+  description: string;
 }
 
 interface ModuleUpdate {
@@ -521,7 +524,7 @@ sequenceDiagram
     IOS->>IOS: 校验 checksum
 
     alt SkillApp 正在运行
-        IOS->>RTM: IPC: hotupdate.push(UpdatePackage)
+        IOS->>RTM: IPC: hotUpdate(UpdatePackage)
         RTM->>RTM: 1. 备份当前版本到 .skillapp/updates/backup/
         RTM->>RTM: 2. 写入新模块文件到 src/app/
         RTM->>RTM: 3. 增量编译受影响模块 → dist/
@@ -571,7 +574,7 @@ sequenceDiagram
     SA->>RTM: 3. Runtime 初始化
     RTM->>M03: 4. IPC 连接 + 发送握手消息<br/>{appId, runtimeVersion, pid}
     M03->>M03: 5. 验证 appId 合法性<br/>（检查注册表）
-    M03-->>RTM: 6. 握手确认<br/>{openclawEndpoint, permissionCacheTTL, heartbeatInterval}
+    M03-->>RTM: 6. 握手确认<br/>{providerEndpoint, permissionCacheTTL, heartbeatInterval}
     RTM->>RTM: 7. 完成初始化<br/>（加载 Skill 元数据、启动心跳）
     RTM->>M03: 8. reportStatus('running')
     M03->>M03: 9. 更新注册表状态 → running<br/>触发 onAppStatusChanged 事件
