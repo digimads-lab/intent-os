@@ -1,0 +1,19 @@
+{
+  "id": "test-skill-a",
+  "name": "Test Skill A",
+  "version": "1.0.0",
+  "description": "数据处理工具",
+  "author": "IntentOS Test Team",
+  "methods": [
+    {
+      "name": "processData",
+      "description": "处理数据",
+      "params": [
+        { "name": "input", "type": "string", "description": "输入数据" }
+      ],
+      "return": { "type": "object", "description": "处理结果" }
+    }
+  ],
+  "dependencies": [],
+  "permissions": ["fs.read", "fs.write"]
+}
