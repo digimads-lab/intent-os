@@ -1,0 +1,160 @@
+/**
+ * SkillApp preload 脚本
+ * 通过 contextBridge 暴露 window.intentOS API 给渲染进程
+ * 由 M-05 SkillApp 生成器自动生成
+ */
+
+const { contextBridge, ipcRenderer } = require('electron');
+
+// ============================================================================
+// 1. 通过 contextBridge 暴露安全 API
+// ============================================================================
+// 注意：这是渲染进程与主进程/Runtime 交互的唯一合法通道。
+// 渲染进程（AI 生成的业务代码）通过 window.intentOS 调用这些 API。
+
+contextBridge.exposeInMainWorld('intentOS', {
+
+  // =========================================================================
+  // Skill 调用接口
+  // =========================================================================
+
+  /**
+   * 调用一个 Skill 执行某个方法
+   * @param {string} skillId - Skill 的唯一标识（如 'data-cleaner'）
+   * @param {string} method - 要执行的方法名（如 'clean'）
+   * @param {object} params - 方法参数（JSON 可序列化对象）
+   * @returns {Promise<any>} - Skill 执行结果
+   * @throws {Error} - Skill 不存在、权限不足、执行超时等错误
+   *
+   * 使用示例：
+   * const result = await window.intentOS.callSkill(
+   *   'csv-cleaner',
+   *   'clean',
+   *   { filePath: '/path/to/data.csv', dedup: true }
+   * );
+   */
+  callSkill: (skillId, method, params) =>
+    ipcRenderer.invoke('runtime:callSkill', { skillId, method, params }),
+
+  // =========================================================================
+  // 资源访问接口（文件、网络、进程等）
+  // =========================================================================
+
+  /**
+   * 通过 MCP 访问宿主 OS 资源
+   * @param {object} request - 资源请求对象
+   *   - {string} type - 资源类型（'fs' | 'net' | 'process'）
+   *   - {string} action - 操作动作（取决于 type）
+   *   - {object} params - 操作参数
+   * @returns {Promise<any>} - 资源操作结果
+   *
+   * 使用示例（文件系统）：
+   * const content = await window.intentOS.accessResource({
+   *   type: 'fs',
+   *   action: 'read',
+   *   params: { path: '/path/to/file.txt' }
+   * });
+   *
+   * 使用示例（网络）：
+   * const response = await window.intentOS.accessResource({
+   *   type: 'net',
+   *   action: 'fetch',
+   *   params: { url: 'https://example.com/api', method: 'GET' }
+   * });
+   */
+  accessResource: (request) =>
+    ipcRenderer.invoke('runtime:accessResource', request),
+
+  // =========================================================================
+  // 权限请求接口
+  // =========================================================================
+
+  /**
+   * 请求用户授予访问特定资源的权限
+   * 首次访问敏感资源（如写入文件、网络访问）时，会弹出授权弹窗
+   * @param {object} request - 权限请求对象
+   *   - {string} resource - 资源类型（如 'fs.write'）
+   *   - {string} action - 具体操作
+   *   - {object} params - 请求参数（如文件路径）
+   * @returns {Promise<boolean>} - 用户是否授予权限
+   *
+   * 使用示例：
+   * const allowed = await window.intentOS.requestPermission({
+   *   resource: 'fs',
+   *   action: 'write',
+   *   params: { path: '/Users/user/Documents/output.csv' }
+   * });
+   * if (allowed) {
+   *   // 执行写入操作
+   * } else {
+   *   // 权限被拒绝
+   * }
+   */
+  requestPermission: (request) =>
+    ipcRenderer.invoke('runtime:requestPermission', request),
+
+  // =========================================================================
+  // 应用信息接口
+  // =========================================================================
+
+  /**
+   * 获取当前 SkillApp 的应用信息
+   * @returns {Promise<object>} - 应用元数据
+   *   - {string} appId - 应用 ID
+   *   - {string} appName - 应用名称
+   *   - {string} version - 应用版本
+   *   - {array} skillIds - 该应用使用的 Skill 列表
+   *   - {array} permissions - 应用声明的权限列表
+   */
+  getAppInfo: () => ({
+    appId: process.env['INTENTOS_APP_ID'] ?? '',
+    appName: process.env['INTENTOS_APP_NAME'] ?? process.env['INTENTOS_APP_ID'] ?? '',
+    version: process.env['INTENTOS_APP_VERSION'] !== undefined
+      ? parseInt(process.env['INTENTOS_APP_VERSION'], 10)
+      : 0,
+  }),
+
+  // =========================================================================
+  // 事件监听接口
+  // =========================================================================
+
+  /**
+   * 监听 Skill 执行错误事件
+   * 当某个 Skill 调用失败时触发此事件
+   * @param {function} callback - 回调函数，接收错误信息对象
+   * @returns {function} - 用于取消监听的函数
+   *
+   * 使用示例：
+   * const unsubscribe = window.intentOS.onSkillError((error) => {
+   *   console.error(`Skill ${error.skillId} failed:`, error.message);
+   *   // 向用户展示错误提示
+   * });
+   *
+   * // 稍后取消监听
+   * unsubscribe();
+   */
+  onSkillError: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('runtime:skillError', handler);
+    // 返回取消监听函数
+    return () => ipcRenderer.removeListener('runtime:skillError', handler);
+  },
+
+  /**
+   * 监听热更新事件
+   * 当 IntentOS Desktop 推送新版本更新时触发
+   * @param {function} callback - 回调函数
+   * @returns {function} - 用于取消监听的函数
+   *
+   * 使用示例：
+   * window.intentOS.onHotUpdate((update) => {
+   *   console.log(`Update available: v${update.toVersion}`);
+   *   // 提示用户应用已更新
+   * });
+   */
+  onHotUpdate: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('runtime:hotUpdate', handler);
+    return () => ipcRenderer.removeListener('runtime:hotUpdate', handler);
+  },
+});
