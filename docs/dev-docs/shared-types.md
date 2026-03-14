@@ -276,6 +276,71 @@ const providerStatusSchema = z.object({
 });
 ```
 
+<!-- CR-001: ProviderConfig 新增 custom 分支 -->
+
+#### ProviderConfig（CR-001 更新）
+
+`ProviderConfig` 由简单接口改为判别联合类型，新增 `custom` 分支以支持任意 OpenAI Chat Completions 兼容端点。
+
+```typescript
+// CR-001: ProviderConfig 改为判别联合类型
+type ProviderConfig =
+  | ClaudeProviderConfig
+  | CustomProviderConfig
+  | OpenClawProviderConfig;
+
+interface ClaudeProviderConfig {
+  providerId: 'claude-api';
+  claudeModel?: string;           // 规划用模型，默认 'claude-opus-4-6'
+  claudeCodegenModel?: string;    // 代码生成用模型，默认 'claude-sonnet-4-6'
+}
+
+/** CR-001 新增：自定义 OpenAI-compatible Provider 配置 */
+interface CustomProviderConfig {
+  providerId: 'custom';
+  customBaseUrl: string;          // 必填，如 'http://localhost:11434/v1'
+  customPlanModel: string;        // 必填，规划阶段使用的模型名，如 'gpt-4o'
+  customCodegenModel: string;     // 必填，代码生成阶段使用的模型名
+  // API Key 不在此处存储，通过 APIKeyStore.getKey('custom') 读取
+}
+
+interface OpenClawProviderConfig {
+  providerId: 'openclaw';
+  openclawHost?: string;          // 默认 '127.0.0.1'
+  openclawPort?: number;          // 默认 7890
+}
+```
+
+**Zod Schema**：
+```typescript
+const claudeProviderConfigSchema = z.object({
+  providerId: z.literal('claude-api'),
+  claudeModel: z.string().optional(),
+  claudeCodegenModel: z.string().optional(),
+});
+
+const customProviderConfigSchema = z.object({
+  providerId: z.literal('custom'),
+  customBaseUrl: z.string().url(),
+  customPlanModel: z.string().min(1),
+  customCodegenModel: z.string().min(1),
+});
+
+const openclawProviderConfigSchema = z.object({
+  providerId: z.literal('openclaw'),
+  openclawHost: z.string().optional(),
+  openclawPort: z.number().int().positive().optional(),
+});
+
+const providerConfigSchema = z.discriminatedUnion('providerId', [
+  claudeProviderConfigSchema,
+  customProviderConfigSchema,
+  openclawProviderConfigSchema,
+]);
+```
+
+**迁移说明**：现有持久化配置读取时若 `providerId` 缺失，视为 `'claude-api'` 以保持向后兼容。
+
 ---
 
 ### 四、规划和生成相关类型
