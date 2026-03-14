@@ -1,2 +1,45 @@
+# Dependencies
+node_modules/
+
+# Electron-vite build output
+out/
+
+# Electron-builder distribution
+dist/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test results
+coverage/
+test-results/
+playwright-report/
+blob-report/
+
+# Claude / OMC
 .claude
 .omc
+
+# GitHub (project-specific)
+.github
