@@ -25,6 +25,27 @@
 
 ---
 
+### 画像一补充：本地模型用户——「使用 Ollama/LM Studio 的开发者」（CR-001 新增）
+
+**代表人物**：注重数据隐私的开发者、离线/内网工作的工程师、不希望绑定特定 AI 服务商的用户
+
+**技术背景**：
+- 熟悉 Ollama、LM Studio 等本地大模型工具
+- 了解 OpenAI-compatible API 协议
+- 追求数据不出本机或私有网络
+
+**使用场景**：
+- 在本地运行 Ollama（`http://localhost:11434/v1`）或 LM Studio，希望 IntentOS 直接对接本地端点
+- 企业内网部署私有 LLM 代理网关，需要自定义 Base URL
+- 希望使用 OpenAI、Azure OpenAI、Gemini 等第三方 OpenAI-compatible 端点，不受限于 Anthropic 账号
+
+**核心诉求**：
+- 在设置页输入自定义 Base URL + API Key + 模型名称，即可切换 AI Provider
+- 本地服务（Ollama 等）无需 API Key 也能正常使用
+- Provider 切换不影响已生成的 SkillApp 运行
+
+---
+
 ### 画像二：个人开发者——「想快速验证想法的独立开发者」
 
 **代表人物**：独立开发者、全栈工程师、技术型产品经理
@@ -71,8 +92,8 @@
 
 | 用户类型 | MVP 前提条件 | 后续迭代扩展 |
 |----------|-------------|-------------|
-| 所有用户 | 需持有有效的 **Claude API Key**（Anthropic），并在首次启动时完成配置 | 后续支持 OpenClaw 本地运行作为零网络依赖的离线 Provider 选项 |
-| 所有用户 | MVP 阶段需要稳定的网络连接以调用 Claude API | OpenClaw Provider 接入后可支持完全离线使用 |
+| 所有用户 | 需持有有效的 **Claude API Key**（Anthropic），并在首次启动时完成配置；或配置自定义 OpenAI-compatible 端点（CR-001 新增） | 后续支持 OpenClaw 本地运行作为零网络依赖的离线 Provider 选项 |
+| 所有用户 | MVP 阶段使用 Claude API 时需要稳定的网络连接；使用本地自定义 Provider（如 Ollama）时可离线运行（CR-001 新增） | OpenClaw Provider 接入后可支持完全离线使用 |
 
 ---
 
@@ -113,6 +134,7 @@
 | M05a | **AI Provider 可用性检查** | 系统启动时检查 AI Provider 是否可用（MVP：Claude API 网络连通性及 API Key 有效性）；不可用时向用户提示并阻止生成流程 |
 | M05b | **API Key 管理** | 用户可在设置中配置 Claude API Key；Key 本地加密存储（使用 OS Keychain 或 electron-safeStorage） |
 | M05c | **AI Provider 选择** | 用户可在设置中选择当前使用的 AI Provider；MVP 仅提供 Claude API，后续迭代新增 OpenClaw 本地 Provider |
+| M05f | **自定义 AI Provider 支持**（CR-001 新增）| 支持用户自定义 AI Provider（Base URL + API Key + 模型名），兼容任意 OpenAI Chat Completions API 协议的端点（OpenAI、Azure OpenAI、Ollama、LM Studio 等）；API Key 可选，适配无需认证的本地服务 |
 | M05d | **网络状态感知** | 使用 Claude API 时，界面显示当前网络连接状态；断网时阻止生成并给出清晰提示 |
 | M05e | **AI Provider 切换** | 系统架构支持 AI Provider 抽象层，允许在 Claude API 与 OpenClaw 之间切换，切换后无需修改核心生成逻辑 |
 | M06 | **代码生成与编译打包** | 将设计方案自动转化为 Electron 应用代码，并完成编译打包 |
