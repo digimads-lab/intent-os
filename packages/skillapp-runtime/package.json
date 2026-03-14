@@ -1,0 +1,23 @@
+{
+  "name": "@intentos/skillapp-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Runtime library embedded in each SkillApp process for IPC with IntentOS Desktop",
+  "main": "dist/main.js",
+  "types": "dist/main.d.ts",
+  "exports": {
+    ".": "./dist/main.js",
+    "./main": "./dist/main.js",
+    "./renderer": "./dist/renderer.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "electron": "^33.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  }
+}
