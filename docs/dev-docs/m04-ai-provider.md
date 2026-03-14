@@ -58,12 +58,13 @@ src/main/modules/ai-provider/
 ├── index.ts                    # 模块入口，导出 AIProviderManager 和 registerBridgeHandlers
 ├── interfaces.ts               # AIProvider 接口和所有相关类型定义
 ├── claude-api-provider.ts      # ClaudeAPIProvider 实现
-├── api-key-store.ts            # APIKeyStore：API Key 加密存储
+├── custom-openai-provider.ts   # CustomOpenAIProvider 实现（CR-001 新增）
+├── api-key-store.ts            # APIKeyStore：API Key 加密存储（CR-001 扩展多 Provider）
 ├── provider-manager.ts         # AIProviderManager：Provider 注册与切换
 ├── ai-provider-bridge.ts       # IPC 桥接：将 Provider 方法注册为 IPC channel handler
 ├── build-mcp-server.ts         # 内置 MCP Server：为代码生成 Agent 提供文件系统工具
 └── prompts/
-    ├── plan-system-prompt.ts   # planApp 系统 prompt 构造
+    ├── plan-system-prompt.ts   # planApp 系统 prompt 构造（CR-001 扩展 options 参数）
     └── generate-system-prompt.ts # generateCode 系统 prompt 构造
 
 src/preload/api/
@@ -167,20 +168,23 @@ export interface AIProvider {
 
 ### ProviderConfig
 
+<!-- CR-001: 更新为判别联合类型，新增 custom 分支 -->
 ```typescript
 /**
- * Provider 初始化配置。
- * claudeApiKey 从 APIKeyStore 解密后传入，不从外部直接传入明文。
+ * Provider 初始化配置（判别联合类型）。
+ * API Key 由 AIProviderManager 从 APIKeyStore 读取后注入，不从外部直接传入明文。
  */
-export interface ProviderConfig {
-  /** Provider 类型标识 */
-  providerId: "claude-api" | "openclaw";
+export type ProviderConfig =
+  | ClaudeProviderConfig
+  | CustomProviderConfig
+  | OpenClawProviderConfig;
 
-  // --- Claude API Provider 配置 ---
+/** Claude API Provider 配置 */
+export interface ClaudeProviderConfig {
+  providerId: "claude-api";
 
   /**
-   * Anthropic API Key，由 APIKeyStore.loadApiKey() 解密后传入。
-   * initialize() 内部不从磁盘读取，由调用方（AIProviderManager）传入。
+   * Anthropic API Key，由 APIKeyStore.getKey('claude-api') 解密后传入。
    */
   claudeApiKey?: string;
 
@@ -213,8 +217,38 @@ export interface ProviderConfig {
    * 默认值：3
    */
   maxRetries?: number;
+}
 
-  // --- OpenClaw Provider 配置（后续 P2 实现使用）---
+/** CR-001 新增：任意 OpenAI-compatible 端点 Provider 配置 */
+export interface CustomProviderConfig {
+  providerId: "custom";
+
+  /**
+   * OpenAI-compatible Base URL，如 "https://api.openai.com/v1"。
+   * 必须以 http:// 或 https:// 开头。
+   */
+  baseURL: string;
+
+  /**
+   * 目标模型名称，如 "gpt-4o"。
+   */
+  model: string;
+
+  /**
+   * 用户自定义 Provider 名称，用于 UI 显示，如 "OpenAI"。
+   */
+  providerName: string;
+
+  /**
+   * API Key，由 APIKeyStore.getKey('custom') 解密后传入。
+   * 本地端点（localhost/127.0.0.1）允许传入空字符串占位符。
+   */
+  apiKey?: string;
+}
+
+/** OpenClaw Provider 配置（P2 实现使用）*/
+export interface OpenClawProviderConfig {
+  providerId: "openclaw";
 
   /** OpenClaw 服务主机地址，默认 "127.0.0.1" */
   openclawHost?: string;
@@ -372,6 +406,19 @@ export enum ProviderErrorCode {
 
   /** Skill 执行超时：executeSkill 超过 30 秒未返回 */
   SKILL_TIMEOUT = "SKILL_TIMEOUT",
+
+  // CR-001 新增：Custom Provider 专用错误码
+  /** Custom Provider Base URL 格式不合法（非 http/https） */
+  INVALID_BASE_URL = "INVALID_BASE_URL",
+
+  /** Custom Provider 指定模型不存在或端点返回 404 */
+  MODEL_NOT_FOUND = "MODEL_NOT_FOUND",
+
+  /** Custom Provider 端点不可达（DNS 解析失败或连接超时） */
+  CUSTOM_PROVIDER_UNREACHABLE = "CUSTOM_PROVIDER_UNREACHABLE",
+
+  /** Custom Provider 不支持 function calling（工具调用测试失败） */
+  TOOL_CALL_UNSUPPORTED = "TOOL_CALL_UNSUPPORTED",
 }
 
 /**
@@ -834,71 +881,87 @@ const log = getLogger("api-key-store");
  * 明文禁止：API Key 绝不写入任何明文文件或日志
  */
 export class APIKeyStore {
-  private readonly storePath: string;
+  // CR-001: 键名规则 intentos:apiKey:{providerId}
+  // 示例：intentos:apiKey:claude-api, intentos:apiKey:custom
 
-  constructor() {
-    this.storePath = path.join(app.getPath("userData"), "secure", "api-key.bin");
+  private keyPath(providerId: string): string {
+    return path.join(app.getPath("userData"), "secure", `api-key-${providerId}.bin`);
   }
 
+  // ─── CR-001 新增：多 Provider 接口 ───────────────────────────────────────
+
   /**
-   * 加密并保存 API Key。
-   * @param key 明文 API Key（格式 sk-ant-...）
+   * 加密并保存指定 Provider 的 API Key。
+   * @param providerId Provider 标识，如 "claude-api" | "custom"
+   * @param key 明文 API Key
    */
-  async saveApiKey(key: string): Promise<void> {
+  async setKey(providerId: string, key: string): Promise<void> {
+    const storePath = this.keyPath(providerId);
     if (!safeStorage.isEncryptionAvailable()) {
       log.warn("safeStorage 不可用，使用降级存储方案");
-      await this.saveApiKeyFallback(key);
+      await this.saveKeyFallback(storePath, key);
       return;
     }
-
     const encrypted = safeStorage.encryptString(key);
-    await fs.mkdir(path.dirname(this.storePath), { recursive: true });
-    await fs.writeFile(this.storePath, encrypted);
-
-    log.info("API Key 已加密保存", { masked: maskApiKey(key) });
+    await fs.mkdir(path.dirname(storePath), { recursive: true });
+    await fs.writeFile(storePath, encrypted);
+    log.info("API Key 已加密保存", { providerId, masked: maskApiKey(key) });
   }
 
   /**
-   * 读取并解密 API Key。
+   * 读取并解密指定 Provider 的 API Key。
    * @returns 解密后的明文 Key，若未存储则返回 null
    */
-  async loadApiKey(): Promise<string | null> {
+  async getKey(providerId: string): Promise<string | null> {
+    const storePath = this.keyPath(providerId);
     try {
-      const encrypted = await fs.readFile(this.storePath);
-
+      const encrypted = await fs.readFile(storePath);
       if (!safeStorage.isEncryptionAvailable()) {
-        return this.loadApiKeyFallback();
+        return this.loadKeyFallback(storePath);
       }
-
       const key = safeStorage.decryptString(encrypted);
-      log.info("API Key 已加载", { masked: maskApiKey(key) });
+      log.info("API Key 已加载", { providerId, masked: maskApiKey(key) });
       return key;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return null; // 未配置
-      }
-      log.error("API Key 读取失败", { error: String(error) });
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      log.error("API Key 读取失败", { providerId, error: String(error) });
       return null;
     }
   }
 
   /**
-   * 删除已存储的 API Key。
+   * 删除指定 Provider 的 API Key。
    */
-  async deleteApiKey(): Promise<void> {
+  async deleteKey(providerId: string): Promise<void> {
+    const storePath = this.keyPath(providerId);
     try {
-      await fs.unlink(this.storePath);
-      log.info("API Key 已删除");
+      await fs.unlink(storePath);
+      log.info("API Key 已删除", { providerId });
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw error;
-      }
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
 
+  // ─── 向后兼容旧接口（不传 providerId，默认 claude-api）────────────────────
+
+  /** @deprecated 请使用 setKey('claude-api', key) */
+  async saveApiKey(key: string): Promise<void> {
+    return this.setKey("claude-api", key);
+  }
+
+  /** @deprecated 请使用 getKey('claude-api') */
+  async loadApiKey(): Promise<string | null> {
+    return this.getKey("claude-api");
+  }
+
+  /** @deprecated 请使用 deleteKey('claude-api') */
+  async deleteApiKey(): Promise<void> {
+    return this.deleteKey("claude-api");
+  }
+
   // 降级方案实现（见下方说明）
-  private async saveApiKeyFallback(key: string): Promise<void> { /* ... */ }
-  private async loadApiKeyFallback(): Promise<string | null> { /* ... */ }
+  private async saveKeyFallback(storePath: string, key: string): Promise<void> { /* ... */ }
+  private async loadKeyFallback(storePath: string): Promise<string | null> { /* ... */ }
 }
 ```
 
@@ -946,6 +1009,7 @@ function maskApiKey(key: string): string {
 import type { AIProvider, ProviderConfig, ProviderStatus } from "./interfaces";
 import { APIKeyStore } from "./api-key-store";
 import { ClaudeAPIProvider } from "./claude-api-provider";
+import { CustomOpenAIProvider } from "./custom-openai-provider"; // CR-001 新增
 
 /**
  * AIProviderManager：管理激活的 AIProvider 实例。
@@ -976,13 +1040,18 @@ export class AIProviderManager {
    * 设置并激活新的 Provider。
    * 若当前已有 Provider，先 dispose() 再初始化新的。
    * 初始化失败时保留旧 Provider（降级为错误状态）。
+   *
+   * CR-001: 切换到 'custom' Provider 时，需先通过 `settings:test-connection` 验证连接。
+   * 切换操作仅在连接测试成功后由渲染进程调用。若切换过程中有活跃会话，
+   * 渲染进程应在调用前弹出确认 Dialog。
    */
   async setProvider(config: ProviderConfig): Promise<void> {
     if (this.provider) {
       await this.provider.dispose();
     }
 
-    const apiKey = await this.apiKeyStore.loadApiKey();
+    // CR-001: 按 providerId 从对应存储槽读取 API Key
+    const apiKey = await this.apiKeyStore.getKey(config.providerId);
     const newProvider = this.createProvider(config.providerId);
 
     newProvider.onStatusChanged((status) => {
@@ -990,7 +1059,15 @@ export class AIProviderManager {
     });
 
     this.provider = newProvider;
-    await newProvider.initialize({ ...config, claudeApiKey: apiKey ?? undefined });
+
+    // 将 API Key 注入对应配置分支
+    if (config.providerId === "claude-api") {
+      await newProvider.initialize({ ...config, claudeApiKey: apiKey ?? undefined });
+    } else if (config.providerId === "custom") {
+      await newProvider.initialize({ ...config, apiKey: apiKey ?? undefined });
+    } else {
+      await newProvider.initialize(config);
+    }
   }
 
   /**
@@ -1029,6 +1106,8 @@ export class AIProviderManager {
     switch (id) {
       case "claude-api":
         return new ClaudeAPIProvider();
+      case "custom":                         // CR-001 新增
+        return new CustomOpenAIProvider();
       default:
         throw new Error(`未知的 Provider ID: ${id}`);
     }
@@ -1484,6 +1563,10 @@ stateDiagram-v2
 | `COMPILE_FAILED` | — | 编译失败 | tsc 修复循环超出上限（3 次）后仍报错 | true（可修改规划后重试） |
 | `SESSION_CANCELLED` | — | 会话已取消 | 用户主动调用 cancelSession() | — （不展示错误） |
 | `SKILL_TIMEOUT` | — | Skill 执行超时 | executeSkill 超过 30 秒 | true（可重试） |
+| `INVALID_BASE_URL` | — | Base URL 格式不合法 | 用户配置的 baseURL 非 http/https | false（需用户修正） |<!-- CR-001 -->
+| `MODEL_NOT_FOUND` | 404 | 指定模型不存在 | Custom Provider 返回 404 | false（需用户修正模型名） |<!-- CR-001 -->
+| `CUSTOM_PROVIDER_UNREACHABLE` | — | 端点不可达 | DNS 失败/连接拒绝/超时 | true（检查网络和 URL 后重试） |<!-- CR-001 -->
+| `TOOL_CALL_UNSUPPORTED` | — | 不支持工具调用 | 模型不支持 function calling | false（需用户更换模型） |<!-- CR-001 -->
 
 ### 各类错误处理策略
 
@@ -1568,6 +1651,25 @@ interface ProviderErrorEvent {
 | 队列满时（>= 10）拒绝新请求 | 抛出 `RATE_LIMITED` 错误 |
 | FIFO 排队顺序 | 两个并发请求，先入队的先执行 |
 
+**CustomOpenAIProvider（`custom-openai-provider.test.ts`）：** <!-- CR-001 新增 -->
+
+使用 Mock HTTP Server（如 `msw` 或 `nock`）拦截 OpenAI SDK 请求，返回固定 SSE 响应（确定性测试）。
+
+| 场景 | 验证点 |
+|------|-------|
+| `initialize()` 成功（Base URL 合法，测试请求通过） | status 变为 "ready" |
+| `initialize()` Base URL 不合法（缺少协议头） | 抛出 `INVALID_BASE_URL`，不发起网络请求 |
+| `initialize()` 端点不可达（mock DNS 失败） | 抛出 `CUSTOM_PROVIDER_UNREACHABLE` |
+| `initialize()` 返回 404（模型不存在） | 抛出 `MODEL_NOT_FOUND` |
+| `initialize()` 不支持 function calling | 抛出 `TOOL_CALL_UNSUPPORTED` |
+| `planApp()` 正常 SSE 流 | 按 `drafting` chunk 顺序 yield，最后 yield `complete` chunk 含正确解析的 planResult |
+| `planApp()` 响应 JSON 无法解析 | 触发降级，返回含 `appName` 的最小 planResult |
+| `generateCode()` 工具调用循环 ≤30 次完成 | finish_reason 为 'stop' 时退出循环，yield 正确 GenProgress |
+| `generateCode()` 循环超过 30 次 | 抛出 `CODEGEN_FAILED` |
+| `cancelSession()` 中断进行中的 planApp | SSE 流中断，无错误事件 |
+| `APIKeyStore.setKey/getKey` 往返 | 读取值与写入值一致 |
+| `APIKeyStore.loadApiKey()` 向后兼容 | 等价于 `getKey('claude-api')` |
+
 **AIProviderBridge（`ai-provider-bridge.test.ts`）：**
 
 | 场景 | 验证点 |
@@ -1622,6 +1724,95 @@ describe("ClaudeAPIProvider.planApp", () => {
 
 ---
 
+## CustomOpenAIProvider 实现规范（CR-001 新增）
+
+文件：`src/main/modules/ai-provider/custom-openai-provider.ts`
+
+### 依赖
+
+使用 `openai` npm 包（官方 SDK，`baseURL` override 为官方支持特性），不使用 `@anthropic-ai/claude-agent-sdk`。
+
+```typescript
+import OpenAI from "openai";
+```
+
+### 类结构
+
+```typescript
+export class CustomOpenAIProvider implements AIProvider {
+  readonly id = "custom";
+  readonly name: string; // 由 config.providerName 注入
+
+  private client: OpenAI | null = null;
+  private config: CustomProviderConfig | null = null;
+  // ... 状态、sessionMap 同 ClaudeAPIProvider
+}
+```
+
+### initialize()
+
+```typescript
+async initialize(config: CustomProviderConfig): Promise<void> {
+  // 1. 校验 baseURL 格式（须以 http:// 或 https:// 开头），否则抛出 INVALID_BASE_URL
+  // 2. 构造 OpenAI client：new OpenAI({ baseURL: config.baseURL, apiKey: config.apiKey || 'intentos-placeholder' })
+  // 3. 调用 _testConnection() 验证连通性和工具调用支持
+  // 4. 成功：状态 → ready；失败：抛出对应 ProviderError
+}
+```
+
+### planApp()
+
+使用 `client.chat.completions.create({ stream: true })` 发起 SSE 流。
+
+**流式映射规则：**
+
+| OpenAI SSE 事件 | PlanChunk 映射 |
+|----------------|---------------|
+| `choices[0].delta.content` 非空 | `{ phase: 'drafting', text: content }` |
+| `choices[0].finish_reason === 'stop'` | `{ phase: 'complete', planResult: parsedPlan }` |
+| stream 结束但 finish_reason 不是 'stop' | 抛出 `PLAN_FAILED` |
+
+响应结束后，从累积文本中解析 JSON（提取 ` ```json ... ``` ` 代码块），失败时进入降级：返回仅含 `appName` 的最小 `PlanResult`。
+
+### generateCode()
+
+使用独立 OpenAI function calling 工具循环（不依赖 claude-agent-sdk）：
+
+```
+while (iterations < 30) {
+  response = client.chat.completions.create({ tools: [write_file, run_command, read_file], ... })
+  if (finish_reason === 'stop') break
+  if (finish_reason === 'tool_calls') → 执行工具调用 → yield GenProgress → 追加结果到 messages
+  else → throw CODEGEN_FAILED
+}
+if (iterations >= 30) throw CODEGEN_FAILED
+```
+
+工具定义（同 ClaudeAPIProvider 内置 MCP Server 工具集）：
+- `write_file(path, content)` → 写文件，yield `{ phase: 'codegen', file: path }`
+- `run_command(command, cwd)` → 执行命令，yield `{ phase: 'compile' }`（用于 tsc）
+- `read_file(path)` → 读文件内容（供 Agent 检查现有代码）
+
+### _testConnection()
+
+```typescript
+private async _testConnection(): Promise<void> {
+  // 1. 发送最小 chat completion（非流式，max_tokens=1），超时 10s
+  //    失败 → CUSTOM_PROVIDER_UNREACHABLE 或 MODEL_NOT_FOUND（HTTP 404）
+  // 2. 发送带 tools 的 chat completion，确认 function calling 支持
+  //    失败 → TOOL_CALL_UNSUPPORTED
+}
+```
+
+### M-05 Prompt 适配（buildPlanSystemPrompt）
+
+`plan-system-prompt.ts` 中的 `buildPlanSystemPrompt(skills, options?)` 在 `options?.providerId === 'custom'` 时：
+- 移除所有 `<thinking>` 标签相关指令
+- 移除 Claude 专有的 `<parameter>`, `<invoke>` 等工具调用指令
+- 改用 JSON 输出格式提示（直接要求返回 JSON 代码块）
+
+---
+
 ## 相关文档
 
 - [`docs/idea.md`](../idea.md) — 核心设计理念，AI Provider 层职责
@@ -1639,3 +1830,4 @@ describe("ClaudeAPIProvider.planApp", () => {
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
 | 1.0 | 2026-03-13 | 初始文档，覆盖 MVP Iter 1 所需全部实现规范 |
+| 1.1 | 2026-03-14 | CR-001：新增 `CustomOpenAIProvider`、`ProviderConfig` 改为判别联合类型、`APIKeyStore` 扩展多 Provider 接口（`setKey/getKey/deleteKey`）、`AIProviderManager.createProvider` 支持 `'custom'` 分支、新增 4 个错误码、新增测试用例 |
