@@ -145,11 +145,13 @@ IntentOS Desktop 采用 **Electron 进程隔离架构**：
 | `settings:set` | → 单向请求 | `ipcRenderer.invoke()` | 更新设置项值 |
 | `settings:get-provider-config` | → 单向请求 | `ipcRenderer.invoke()` | 获取 AI Provider 配置 |
 | `settings:set-provider-config` | → 单向请求 | `ipcRenderer.invoke()` | 更新 AI Provider 配置 |
-| `settings:get-api-key` | → 单向请求 | `ipcRenderer.invoke()` | 获取 Claude API Key（masked） |
-| `settings:save-api-key` | → 单向请求 | `ipcRenderer.invoke()` | 保存 API Key（加密存储） |
+| `settings:get-api-key` | → 单向请求 | `ipcRenderer.invoke()` | 获取指定 Provider 的 API Key（masked），支持 `providerId` 参数（默认 `'claude-api'`） |
+| `settings:save-api-key` | → 单向请求 | `ipcRenderer.invoke()` | 保存 API Key（加密存储），支持 `providerId` 参数（默认 `'claude-api'`） |
 | `settings:delete-api-key` | → 单向请求 | `ipcRenderer.invoke()` | 删除 API Key |
-| `settings:test-connection` | → 单向请求 | `ipcRenderer.invoke()` | 测试 AI Provider 连接 |
+| `settings:test-connection` | → 单向请求 | `ipcRenderer.invoke()` | 测试 AI Provider 连接，响应新增 `providerName` 字段 |
 | `settings:connection-status-changed` | ← 事件推送 | `webContents.send()` | 连接状态变更通知 |
+| `settings:get-custom-provider-config` | → 单向请求 | `ipcRenderer.invoke()` | 读取自定义 Provider 配置（Base URL、模型名），不含 API Key 明文（CR-001 新增） |
+| `settings:set-custom-provider-config` | → 单向请求 | `ipcRenderer.invoke()` | 写入自定义 Provider 配置，可选传入 API Key 加密存储（CR-001 新增） |
 
 ### 修改域（`modification:*`）
 
@@ -989,6 +991,68 @@ interface ConnectionStatusChangedEvent {
   timestamp: string;
 }
 ```
+
+---
+
+#### `settings:get-custom-provider-config` — 获取自定义 Provider 配置 <!-- CR-001 新增 -->
+
+**方向**：Renderer → Main（invoke）
+
+**请求**：无参数（`undefined`）
+
+**响应**：
+```typescript
+interface GetCustomProviderConfigResponse {
+  baseURL: string;      // 当前保存的 Base URL，未配置时为空字符串
+  model: string;        // 当前保存的模型名称，未配置时为空字符串
+  providerName: string; // 当前保存的 Provider 名称，未配置时为空字符串
+}
+```
+
+**说明**：
+- 返回 `ProviderConfig` 中 `custom` 分支的非敏感字段（不含 API Key）
+- API Key 通过 `settings:get-api-key` 单独获取（`providerId: 'custom'`）
+- 未配置时所有字段返回空字符串，不抛出错误
+
+**错误**：
+| 错误码 | 触发条件 |
+|--------|----------|
+| （无） | 此接口设计为不抛出错误 |
+
+---
+
+#### `settings:set-custom-provider-config` — 保存自定义 Provider 配置 <!-- CR-001 新增 -->
+
+**方向**：Renderer → Main（invoke）
+
+**请求**：
+```typescript
+interface SetCustomProviderConfigRequest {
+  baseURL: string;      // OpenAI-compatible 端点 Base URL，必填
+  model: string;        // 目标模型名称，必填
+  providerName: string; // 用户自定义名称，必填
+}
+```
+
+**响应**：
+```typescript
+interface SetCustomProviderConfigResponse {
+  success: boolean;
+  error?: { code: string; message: string };
+}
+```
+
+**说明**：
+- 持久化 `custom` 分支的非敏感配置字段到 electron-store
+- API Key 通过 `settings:save-api-key` 单独保存（`providerId: 'custom'`）
+- `baseURL` 必须为合法 URL（以 `http://` 或 `https://` 开头），否则返回 `INVALID_BASE_URL` 错误
+- 保存成功后不自动切换 Provider，需用户再调用 `ai-provider:set-provider`
+
+**错误**：
+| 错误码 | 触发条件 |
+|--------|----------|
+| `INVALID_BASE_URL` | `baseURL` 格式不合法（非 http/https URL） |
+| `STORE_WRITE_FAILED` | electron-store 写入失败 |
 
 ---
 
