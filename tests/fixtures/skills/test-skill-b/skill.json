@@ -1,0 +1,19 @@
+{
+  "id": "test-skill-b",
+  "name": "Test Skill B",
+  "version": "1.0.0",
+  "description": "导出工具",
+  "author": "IntentOS Test Team",
+  "methods": [
+    {
+      "name": "exportToCSV",
+      "description": "导出为 CSV",
+      "params": [
+        { "name": "data", "type": "array", "description": "数据数组" }
+      ],
+      "return": { "type": "string", "description": "CSV 文件路径" }
+    }
+  ],
+  "dependencies": [],
+  "permissions": ["fs.write", "process.spawn"]
+}
