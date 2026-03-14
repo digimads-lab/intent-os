@@ -1,0 +1,57 @@
+{
+  "name": "intent-os",
+  "version": "0.1.0",
+  "private": true,
+  "description": "IntentOS - Intent-first OS for generating SkillApps",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "lint": "eslint src/ packages/",
+    "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.renderer.json",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test",
+    "claude-stub": "npx ts-node claude-stub/src/index.ts"
+  },
+  "main": "out/main/index.js",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.54.0",
+    "@intentos/shared-types": "workspace:*",
+    "better-sqlite3": "^12.6.2",
+    "clsx": "^2.1.0",
+    "electron-updater": "^6.1.0",
+    "lucide-react": "^0.400.0",
+    "openai": "^6.27.0",
+    "react-router-dom": "^6.26.0",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@electron-toolkit/preload": "^3.0.0",
+    "@electron-toolkit/utils": "^3.0.0",
+    "@playwright/test": "^1.58.2",
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@typescript-eslint/eslint-plugin": "^8.57.0",
+    "@typescript-eslint/parser": "^8.57.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "autoprefixer": "^10.4.0",
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.0",
+    "electron-vite": "^2.3.0",
+    "eslint": "^8.57.0",
+    "eslint-plugin-import": "^2.32.0",
+    "postcss": "^8.4.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5.5.0",
+    "typescript-eslint": "^8.57.0",
+    "vite": "^5.3.0",
+    "vitest": "^1.6.0"
+  }
+}
