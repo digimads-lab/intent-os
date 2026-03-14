@@ -8,9 +8,9 @@
 
 | 项目 | 内容 |
 |------|------|
-| **职责** | 提供 IntentOS Desktop 的 Electron 主进程和管理台 UI 框架。包括：应用主窗口管理、侧栏导航路由、状态栏渲染、首次启动引导流程、全局设置页面 |
+| **职责** | 提供 IntentOS Desktop 的 Electron 主进程和管理台 UI 框架。包括：应用主窗口管理、侧栏导航路由、状态栏渲染、首次启动引导流程、全局设置页面；**（CR-001 新增）在设置页 AI Provider 区块中渲染 Custom Provider 配置表单（Base URL、API Key、规划模型、代码生成模型）；在首次启动向导 Step 1 中展示 Custom 选项；状态栏动态显示当前激活 Provider 的名称** |
 | **边界（不做什么）** | 不负责 SkillApp 的代码生成和编译；不负责 Skill 的执行和调度；不直接管理 SkillApp 进程生命周期（委托给生命周期管理器）；不处理 AI Provider 通信协议细节 |
-| **覆盖需求** | M01（Skill 管理中心 UI）、M02（SkillApp 管理中心 UI）、M04（应用生成窗口 UI） |
+| **覆盖需求** | M01（Skill 管理中心 UI）、M02（SkillApp 管理中心 UI）、M04（应用生成窗口 UI）、M05f（自定义 AI Provider 设置 UI，CR-001 新增） |
 
 ### M-02: Skill 管理器（Skill Manager）
 
@@ -32,17 +32,28 @@
 
 | 项目 | 内容 |
 |------|------|
-| **职责** | 定义 `AIProvider` 抽象接口，管理当前激活的 Provider 实例，统一封装所有 AI 能力调用。包括：Provider 注册与切换（根据用户设置激活不同 Provider）、MVP 内置 `ClaudeAPIProvider`（使用 `@anthropic-ai/sdk` + `@anthropic-ai/claude-agent-sdk`）、后续支持 `OpenClawProvider`（WebSocket 连接本地 OpenClaw 服务）、连接状态监控与事件通知（Provider 可用/不可用）、请求队列管理（并发控制、超时处理）、流式数据在主进程与渲染进程之间的 IPC 转发（sessionId 隔离） |
+| **职责** | 定义 `AIProvider` 抽象接口，管理当前激活的 Provider 实例，统一封装所有 AI 能力调用。包括：Provider 注册与切换（根据用户设置激活不同 Provider）、MVP 内置 `ClaudeAPIProvider`（使用 `@anthropic-ai/sdk` + `@anthropic-ai/claude-agent-sdk`）、**（CR-001 新增）内置 `CustomOpenAIProvider`（使用 `openai` npm 包，支持 `baseURL` 覆盖，对接任意兼容 OpenAI Chat Completions API 的端点）**、后续支持 `OpenClawProvider`（WebSocket 连接本地 OpenClaw 服务）、连接状态监控与事件通知（Provider 可用/不可用）、请求队列管理（并发控制、超时处理）、流式数据在主进程与渲染进程之间的 IPC 转发（sessionId 隔离）、**（CR-001 新增）`APIKeyStore` 扩展为按 `providerId` 独立存储多个 Provider 的 API Key** |
 | **边界（不做什么）** | 不实现具体的 AI 推理逻辑（由各 Provider 实现负责）；不负责 UI 渲染；不管理 MCP 资源的直接访问（MCP 通过 M-06 SkillApp 运行时代理） |
-| **覆盖需求** | M05（AI Provider 规划引擎集成）、M06（代码生成与编译打包）、M11（生成进度反馈） |
+| **覆盖需求** | M05（AI Provider 规划引擎集成）、M06（代码生成与编译打包）、M11（生成进度反馈）、M05f（自定义 AI Provider 支持，CR-001 新增） |
+
+**（CR-001 新增）M-04 接口变更**：
+- `ProviderConfig` 改为判别联合类型，新增 `providerId: "custom"` 分支，携带 `customBaseUrl`、`customPlanModel`、`customCodegenModel` 字段
+- `APIKeyStore`：`saveApiKey`/`loadApiKey` 接口扩展为 `setKey(providerId, key)`/`getKey(providerId)` 形式，支持多 Provider 独立条目
+- `AIProviderManager.switchProvider()`：参数枚举从 `"claude-api" | "openclaw"` 扩展为 `"claude-api" | "openclaw" | "custom"`
+- 新增 IPC channel：`settings:get-custom-provider-config` 和 `settings:set-custom-provider-config`
 
 ### M-05: SkillApp 生成器（SkillApp Generator）
 
 | 项目 | 内容 |
 |------|------|
-| **职责** | 承载从用户意图到可运行 SkillApp 的完整生成流水线。包括三个阶段：(1) 规划阶段 — 接收用户自然语言意图，通过 M-04 AI Provider 通信层调用规划能力，支持多轮交互式方案调整；(2) 生成阶段 — 调用 AI Provider 代码生成能力，产出 Electron 应用源码；(3) 打包阶段 — 编译源码、打包为可运行的 SkillApp 产物。同时负责增量修改流程（分析现有代码、生成增量方案、局部重新生成） |
+| **职责** | 承载从用户意图到可运行 SkillApp 的完整生成流水线。包括三个阶段：(1) 规划阶段 — 接收用户自然语言意图，通过 M-04 AI Provider 通信层调用规划能力，支持多轮交互式方案调整；(2) 生成阶段 — 调用 AI Provider 代码生成能力，产出 Electron 应用源码；(3) 打包阶段 — 编译源码、打包为可运行的 SkillApp 产物。同时负责增量修改流程（分析现有代码、生成增量方案、局部重新生成）；**（CR-001 新增）`buildPlanSystemPrompt()` 和 `buildGeneratePrompt()` 接受 `providerId` 参数，当 `providerId === "custom"` 时移除 Claude 专有引导词（`<thinking>` 标签等），使 prompt 对标准 OpenAI Chat Completions 格式友好** |
 | **边界（不做什么）** | 不负责生成窗口的 UI 渲染（由桌面容器提供）；不负责 SkillApp 的运行时执行；不负责 AI Provider 后端本身的 AI 推理逻辑；不管理 SkillApp 的进程生命周期 |
 | **覆盖需求** | M03（自然语言意图输入）、M04（交互式向导）、M05（AI Provider 规划引擎集成）、M06（代码生成与编译打包）、M07（原地变形）、M11（生成进度反馈）、M14（增量修改流程）、S03（多 Skill 组合生成）、S04（设计方案预览与调整） |
+
+**（CR-001 新增）M-05 接口变更**：
+- `buildPlanSystemPrompt(skills, options?: { providerId?: string })` — 新增可选 `options` 参数
+- `buildGeneratePrompt(plan, appId, options?: { providerId?: string })` — 新增可选 `options` 参数
+- 调用方（M-04 各 Provider 实现）在调用上述函数时传入自身的 `providerId`
 
 ### M-06: SkillApp 运行时（SkillApp Runtime）
 
@@ -125,7 +136,7 @@
 | M-01 桌面容器 | M-02, M-03, M-04, M-05 | M-07 |
 | M-02 Skill 管理器 | M-04 | M-01, M-05, M-06, M-07 |
 | M-03 SkillApp 生命周期管理器 | M-04 | M-01, M-06 |
-| M-04 AI Provider 通信层 | （无，依赖 Anthropic SDK（MVP）或 OpenClaw WebSocket（后续）） | M-02, M-03, M-05, M-06 |
+| M-04 AI Provider 通信层 | （无，依赖 Anthropic SDK（MVP）、`openai` npm 包（CR-001 新增）或 OpenClaw WebSocket（后续）） | M-02, M-03, M-05, M-06 |
 | M-05 SkillApp 生成器 | M-02, M-04 | M-01 |
 | M-06 SkillApp 运行时 | M-02, M-03, M-04 | （无，被 SkillApp 实例内嵌使用） |
 | M-07 Skill 市场客户端 | M-01, M-02 | （无） |
