@@ -104,17 +104,35 @@ type ProviderStatus =
   | "rate_limited"    // API 速率受限（HTTP 429）
   | "disposing";      // 正在释放资源
 
-interface ProviderConfig {
-  providerId: "claude-api" | "openclaw";
-  // Claude API Provider 配置
-  claudeApiKey?: string;          // 从 OS Keychain 解密后传入
-  claudeModel?: string;           // 默认 "claude-opus-4-6"
-  claudeCodegenModel?: string;    // 代码生成用模型，默认 "claude-sonnet-4-6"
-  // OpenClaw Provider 配置（后续）
-  openclawHost?: string;          // 默认 "127.0.0.1"
+// CR-001: ProviderConfig 改为判别联合类型
+type ProviderConfig =
+  | ClaudeProviderConfig
+  | CustomProviderConfig
+  | OpenClawProviderConfig;
+
+interface ClaudeProviderConfig {
+  providerId: 'claude-api';
+  claudeModel?: string;           // 规划用模型，默认 'claude-opus-4-6'
+  claudeCodegenModel?: string;    // 代码生成用模型，默认 'claude-sonnet-4-6'
+}
+
+// CR-001 新增
+interface CustomProviderConfig {
+  providerId: 'custom';
+  customBaseUrl: string;          // 必填，如 'http://localhost:11434/v1'
+  customPlanModel: string;        // 必填，规划阶段使用的模型名，如 'gpt-4o'
+  customCodegenModel: string;     // 必填，代码生成阶段使用的模型名
+  // API Key 不在此处存储，通过 APIKeyStore.getKey('custom') 读取
+}
+
+interface OpenClawProviderConfig {
+  providerId: 'openclaw';
+  openclawHost?: string;          // 默认 '127.0.0.1'
   openclawPort?: number;          // 默认 7890
 }
 ```
+
+**迁移说明**：现有持久化配置（存储在 userData 的 JSON 文件中）读取时若 `providerId` 缺失，视为 `'claude-api'` 以保持向后兼容。
 
 ---
 
@@ -254,6 +272,287 @@ type ProviderErrorCode =
   | "COMPILE_FAILED"        // 编译失败
   | "SESSION_CANCELLED";    // 会话被取消
 ```
+
+---
+
+## 2.8 新增错误码（CR-001 新增）
+
+在 M-04 错误码体系中追加以下错误码（不修改现有错误码含义）：
+
+| 错误码 | 含义 | 恢复策略 |
+|--------|------|---------|
+| `INVALID_BASE_URL` | 自定义 Provider 的 Base URL 格式无效（非合法 URL） | 提示用户检查 Base URL 格式 |
+| `MODEL_NOT_FOUND` | 指定模型在端点不存在（HTTP 404） | 提示用户检查模型名称 |
+| `CUSTOM_PROVIDER_UNREACHABLE` | 自定义端点无法连接（连接拒绝/超时） | 提示用户确认服务已启动 |
+| `TOOL_CALL_UNSUPPORTED` | 模型不支持 function calling（代码生成阶段） | 提示用户更换支持工具调用的模型 |
+
+---
+
+## 2b. CustomOpenAIProvider 实现方案（CR-001 新增）
+
+### 2b.1 技术选型与依赖
+
+```
+新增依赖：openai ^4.x（npm 包）
+不引入其他新依赖
+```
+
+`openai` npm 包支持 `baseURL` 覆盖，可对接任意 OpenAI Chat Completions 兼容端点：
+
+```typescript
+import OpenAI from 'openai';
+
+// 初始化示例
+const client = new OpenAI({
+  baseURL: config.customBaseUrl,   // 如 'http://localhost:11434/v1'
+  apiKey: apiKey ?? 'no-key',      // 空 Key 时传占位字符串，避免 SDK 报错
+});
+```
+
+### 2b.2 CustomOpenAIProvider 类定义
+
+```typescript
+// 文件：src/main/modules/ai-provider/custom-openai-provider.ts
+export class CustomOpenAIProvider implements AIProvider {
+  readonly id = 'custom';
+  get name(): string {
+    // 从 Base URL 提取域名作为显示名，如 'Custom (api.openai.com)'
+    return `Custom (${new URL(this.config.customBaseUrl).hostname})`;
+  }
+
+  private client: OpenAI | null = null;
+  private config!: CustomProviderConfig;
+  private _status: ProviderStatus = { connectionStatus: 'uninitialized' };
+  private statusHandlers: Array<(s: ProviderStatus) => void> = [];
+  private abortControllers = new Map<string, AbortController>();
+
+  async initialize(config: CustomProviderConfig): Promise<void> {
+    this.config = config;
+    this._setStatus('initializing');
+
+    // 1. 验证 Base URL 格式
+    try { new URL(config.customBaseUrl); }
+    catch { throw new ProviderError('INVALID_BASE_URL', `Invalid Base URL: ${config.customBaseUrl}`); }
+
+    // 2. 读取 API Key（可为空）
+    const apiKey = await apiKeyStore.getKey('custom');
+
+    // 3. 创建 OpenAI 客户端
+    this.client = new OpenAI({
+      baseURL: config.customBaseUrl,
+      apiKey: apiKey ?? 'intentos-no-key',
+    });
+
+    // 4. 发送连接测试请求
+    await this._testConnection();
+    this._setStatus('ready');
+  }
+
+  async dispose(): Promise<void> {
+    this._setStatus('disposing');
+    for (const ctrl of this.abortControllers.values()) ctrl.abort();
+    this.abortControllers.clear();
+    this.client = null;
+    this._setStatus('uninitialized');
+  }
+}
+```
+
+### 2b.3 planApp() — OpenAI Chat Completions 流式实现
+
+**关键适配点**：OpenAI API 使用 `role: 'system' | 'user' | 'assistant'`，内容为字符串；Claude API 使用 Anthropic messages 格式，内容为 `ContentBlock[]`。
+
+```typescript
+async *planApp(request: PlanRequest): AsyncIterable<PlanChunk> {
+  const controller = new AbortController();
+  this.abortControllers.set(request.sessionId, controller);
+
+  const messages = buildOpenAIMessages(request);
+  // buildOpenAIMessages: 将 IntentOS PlanRequest 转换为 OpenAI messages 格式
+  // system message: 包含 Skill 列表 + 约束（不含 Claude 专有 <thinking> 引导词）
+  // user message: 用户意图
+  // 多轮历史: contextHistory 直接映射为 role: 'user'|'assistant' 消息
+
+  try {
+    const stream = await this.client!.chat.completions.create({
+      model: this.config.customPlanModel,
+      messages,
+      stream: true,
+    }, { signal: controller.signal });
+
+    let accumulated = '';
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta?.content ?? '';
+      if (delta) {
+        accumulated += delta;
+        yield { sessionId: request.sessionId, phase: 'drafting' as const, content: delta };
+      }
+      if (chunk.choices[0]?.finish_reason === 'stop') {
+        const planDraft = parsePlanResult(accumulated);
+        yield { sessionId: request.sessionId, phase: 'complete' as const, content: '', planDraft };
+      }
+    }
+  } catch (err) {
+    this._handleStreamError(err, request.sessionId);
+  } finally {
+    this.abortControllers.delete(request.sessionId);
+  }
+}
+```
+
+**Prompt 适配**（M-05 `buildPlanSystemPrompt` 负责，当 `providerId === 'custom'` 时）：
+- 移除 `<thinking>` 标签引导词（Claude 专有）
+- 移除 `<parameter name="anthropic_thinking">` 内容块指令
+- system message 以纯文本字符串形式传入（非 ContentBlock 格式）
+
+### 2b.4 generateCode() — OpenAI Function Calling 实现
+
+**关键差异**：Claude 使用 `tool_use` 协议（通过 `@anthropic-ai/claude-agent-sdk`）；OpenAI 使用 `tools` + function calling 格式（`tool_calls` in response）。`CustomOpenAIProvider` 实现独立的工具调用循环，不复用 claude-agent-sdk。
+
+工具集定义（`write_file`、`run_command`、`read_file`）与 Claude API Provider 一致，格式转换为 OpenAI function calling 格式。工具调用循环最多 30 次迭代防止无限循环。
+
+**工具调用不支持的检测**：若 `response.choices[0].finish_reason === 'stop'` 且首次迭代未写入任何文件，视为模型未响应工具调用，抛出 `TOOL_CALL_UNSUPPORTED` 错误。
+
+### 2b.5 executeSkill() 实现
+
+`CustomOpenAIProvider` 的 `executeSkill` 通过 OpenAI function calling 执行 Skill 方法调用，Skill 执行为单次非流式请求，使用规划模型（轻量）。
+
+### 2b.6 连接测试实现（_testConnection）
+
+发送最小化 completion 请求（`max_tokens: 1`）验证端点可达性和 API Key 有效性。错误映射规则：
+- HTTP 401 → `ProviderError('API_KEY_INVALID', ...)`
+- HTTP 404 → `ProviderError('MODEL_NOT_FOUND', ...)`
+- `ECONNREFUSED`/`ENOTFOUND` → `ProviderError('CUSTOM_PROVIDER_UNREACHABLE', ...)`
+
+### 2b.7 流式格式映射
+
+| OpenAI 流事件 | IntentOS PlanChunk / GenProgressChunk |
+|-------------|--------------------------------------|
+| `choices[0].delta.content !== null` | `PlanChunk { phase: 'drafting', content: delta }` |
+| `choices[0].finish_reason === 'stop'` | `PlanChunk { phase: 'complete', planDraft: parsedResult }` |
+| `finish_reason === 'tool_calls'` + `function.name === 'write_file'` | `GenProgressChunk { phase: 'codegen', percent: ..., message: 'Writing: path' }` |
+| `finish_reason === 'tool_calls'` + `function.name === 'run_command'` + `command.includes('tsc')` | `GenProgressChunk { phase: 'compile', percent: ..., message: 'Compiling...' }` |
+| 工具调用循环结束，无更多工具调用 | `GenCompleteChunk { phase: 'done', ... }` |
+
+### 2b.8 文件结构变更
+
+```
+src/main/modules/ai-provider/
+├── interfaces.ts              # 已有，不修改（AIProvider 接口）
+├── claude-api-provider.ts     # 已有，不修改
+├── custom-openai-provider.ts  # CR-001 新增
+├── api-key-store.ts           # 已有，扩展 getKey/setKey/deleteKey 接口
+├── provider-manager.ts        # 已有，switchProvider() 增加 'custom' 分支
+└── ai-provider-bridge.ts      # 已有，注册新增 IPC channel 处理器
+```
+
+### 2b.9 Prompt 适配规范（M-05 变更）
+
+```typescript
+// M-05 中的 buildPlanSystemPrompt 增加 options 参数
+function buildPlanSystemPrompt(
+  skills: SkillMeta[],
+  options?: { providerId?: string }
+): string {
+  const isCustomProvider = options?.providerId === 'custom';
+
+  let prompt = buildBaseSkillListSection(skills);
+  prompt += buildConstraintsSection();
+
+  if (!isCustomProvider) {
+    // 仅 Claude API 时添加思维链引导词
+    prompt += `\n\nPlease think step by step using <thinking> tags before providing your response.`;
+  }
+
+  return prompt;
+}
+```
+
+**移除的 Claude 专有内容**（当 `isCustomProvider === true` 时）：`<thinking>` 标签引导词、`<parameter name="anthropic_thinking">` 内容块指令。
+
+**保留的通用内容**：Skill 列表描述、SkillApp 代码约束、输出格式要求（JSON 规划结果）。
+
+### 2b.10 新增 IPC Channel 规范
+
+#### settings:get-custom-provider-config
+
+```typescript
+// 响应
+interface GetCustomProviderConfigResult {
+  config: CustomProviderConfig | null;  // null 表示从未配置过
+  hasApiKey: boolean;                   // API Key 是否已存储（不返回明文 Key）
+}
+```
+
+#### settings:set-custom-provider-config
+
+```typescript
+interface SetCustomProviderConfigPayload {
+  baseUrl: string;          // 必填
+  planModel: string;        // 必填
+  codegenModel: string;     // 必填
+  apiKey?: string;          // 可选，传入时加密存储；不传时保留已有 Key
+  clearApiKey?: boolean;    // true 时删除已存储的 Key
+}
+
+interface SetCustomProviderConfigResult {
+  success: boolean;
+  error?: { code: string; message: string };
+}
+```
+
+调用 `settings:set-custom-provider-config` 后，若当前激活 Provider 为 `custom`，主进程自动重新调用 `switchProvider` 使新配置生效（热更新配置）。
+
+#### settings:get-api-key 和 settings:save-api-key 扩展
+
+```typescript
+// settings:get-api-key 扩展（providerId 缺省时默认 'claude-api'，向后兼容）
+ipcRenderer.invoke('settings:get-api-key', { providerId?: 'claude-api' | 'custom' })
+
+// settings:save-api-key 扩展
+ipcRenderer.invoke('settings:save-api-key', { key: string, providerId?: 'claude-api' | 'custom' })
+```
+
+#### ai-provider:set-provider 枚举扩展
+
+```typescript
+ipcRenderer.invoke('ai-provider:set-provider', {
+  providerId: 'claude-api' | 'openclaw' | 'custom',  // 新增 'custom'
+  config?: ProviderConfig,
+})
+```
+
+#### settings:test-connection 响应扩展
+
+```typescript
+interface TestConnectionResult {
+  success: boolean;
+  latencyMs?: number;
+  providerName?: string;   // 新增：显示连接的端点名称，如 'api.openai.com'
+  error?: { code: string; message: string };
+}
+```
+
+### 2b.11 与现有技术方案的兼容性
+
+| 技术决策 | 兼容性评估 |
+|---------|-----------|
+| `AIProvider` 抽象接口不修改 | `CustomOpenAIProvider` 实现同一接口，上层模块零感知 |
+| `ClaudeAPIProvider` 不修改 | 现有 Claude 用户无任何行为变化 |
+| 请求队列管理器不修改 | `CustomOpenAIProvider` 的请求同样经过队列管理 |
+| IPC 转发机制不修改 | `CustomOpenAIProvider` yield 的格式与 Claude 相同，Bridge 转发逻辑不变 |
+| 错误码体系扩展（不修改已有） | 新增 4 个错误码（见 § 2.8），不修改现有错误码含义 |
+| `@intentos/shared-types` 版本 | `ProviderConfig` 类型变更为联合类型，属于 minor 版本升级 |
+
+### 2b.12 技术风险与应对方案
+
+| 风险 | 严重程度 | 应对方案 |
+|------|---------|---------|
+| 目标端点不支持 function calling | High | 在 generateCode 首次迭代后检测，明确提示错误码 `TOOL_CALL_UNSUPPORTED` |
+| 不同端点的流式响应格式差异 | Medium | 使用 `openai` npm 包统一处理 SSE 格式 |
+| Prompt 适配不完整导致输出格式异常 | Medium | JSON 规划结果解析使用 try/catch + 降级策略 |
+| Base URL 末尾 `/` 处理 | Low | 传入时统一 trim 末尾 `/`，避免双斜杠问题 |
+| API Key 为空时 openai 包报错 | Low | 传入占位字符串 `'intentos-no-key'` |
 
 ---
 
@@ -409,7 +708,31 @@ graph TB
 
 ---
 
-## 4. API Key 管理
+## 4. API Key 管理（CR-001 扩展）
+
+### 4.0 APIKeyStore 多 Provider 接口（CR-001 新增）
+
+原有 `APIKeyStore` 仅存储一条 Key（`apiKey:claude-api`）。CR-001 扩展为按 `providerId` 独立存储：
+
+```typescript
+// CR-001: APIKeyStore 扩展接口
+interface APIKeyStore {
+  /** 按 providerId 存储 Key（加密，使用 safeStorage / OS Keychain） */
+  setKey(providerId: 'claude-api' | 'custom', key: string): Promise<void>;
+
+  /** 按 providerId 读取 Key，不存在返回 null */
+  getKey(providerId: 'claude-api' | 'custom'): Promise<string | null>;
+
+  /** 按 providerId 删除 Key */
+  deleteKey(providerId: 'claude-api' | 'custom'): Promise<void>;
+}
+```
+
+**存储键名规则**：
+- Claude API Key：存储键名 `intentos:apiKey:claude-api`（原有 `intentos:apiKey` 迁移为此格式，兼容读取旧格式）
+- Custom API Key：存储键名 `intentos:apiKey:custom`
+
+**向后兼容**：原有 `saveApiKey(key)` / `loadApiKey()` 接口标记为 `@deprecated`，内部委托给 `setKey('claude-api', key)` / `getKey('claude-api')`，保持向后兼容一个迭代后移除。
 
 ### 4.1 存储方案
 
@@ -589,3 +912,8 @@ OpenClaw 本地服务采用双协议设计：
 | API Key 存储 | `safeStorage` / OS Keychain（`keytar`） | 安全存储，不写明文配置文件，符合安全需求 | `requirements.md`（安全 - API Key 本地加密存储） |
 | 并发控制 | 规划/生成串行（最多 1 并发），Skill 调用独立限制（最多 5） | 避免 Rate Limit，AI 推理资源有限，保证生成质量 | 本文档 3.2 |
 | 后续 AI 后端 | OpenClaw Provider（P2） | 本地推理备选，离线可用，保护隐私；WebSocket 协议详细设计存档于 `openclaw-spec.md` | 本文档第 6 节 |
+| CustomOpenAIProvider 技术选型（CR-001）| `openai` npm 包 + `baseURL` 覆盖 | 官方 SDK 已内置兼容层，覆盖 OpenAI/Azure/Ollama 等主流端点；避免自实现 SSE 解析 | 本文档 § 2b.1 |
+| ProviderConfig 类型重构（CR-001）| 判别联合类型（discriminated union） | 新增 `custom` 分支后，扁平结构易产生字段歧义；联合类型提供编译期类型安全，switch 穷尽检查 | 本文档 § 1.4 |
+| APIKeyStore 扩展策略（CR-001）| 按 `providerId` 独立存储条目 | 不同 Provider 的 Key 相互隔离，避免混淆；向后兼容旧接口一个迭代后移除 | 本文档 § 4.0 |
+| Prompt 适配策略（CR-001）| M-05 `providerId` 参数控制 | 在 Prompt 构建层统一处理 Provider 差异，避免各 Provider 重复实现 Prompt 逻辑 | 本文档 § 2b.9 |
+| 工具调用协议差异处理（CR-001）| CustomOpenAIProvider 实现独立工具调用循环 | OpenAI function calling 与 Claude tool_use 协议不同，不复用 claude-agent-sdk；保持两套 Provider 实现互不干扰 | 本文档 § 2b.4 |
