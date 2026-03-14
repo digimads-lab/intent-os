@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "strictNullChecks": true,
+    "noImplicitAny": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "exactOptionalPropertyTypes": true,
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "target": "ES2022",
+    "paths": {
+      "@intentos/shared-types": ["./packages/shared-types/src/index.ts"]
+    }
+  },
+  "include": ["src/main/**/*", "src/preload/**/*", "packages/shared-types/src/**/*"]
+}
