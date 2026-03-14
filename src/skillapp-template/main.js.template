@@ -1,0 +1,178 @@
+/**
+ * SkillApp Electron 主进程入口
+ * 由 M-05 SkillApp 生成器自动填充并生成
+ */
+
+const { app, BrowserWindow, ipcMain } = require('electron');
+const path = require('path');
+
+// 导入 SkillApp Runtime（M-06）
+const runtime = require('@intentos/skillapp-runtime');
+
+// ============================================================================
+// 1. 环境变量读取
+// ============================================================================
+// 这些环境变量由 IntentOS Desktop 在启动 SkillApp 时设置
+const APP_ID = process.env.INTENTOS_APP_ID || '{{APP_ID}}';
+const IPC_SOCKET_PATH = process.env.INTENTOS_SOCKET_PATH;
+const DESKTOP_PID = process.env.INTENTOS_DESKTOP_PID;
+
+let mainWindow;
+
+// ============================================================================
+// 2. Unix Socket 握手 — 进程启动后立即通知 Desktop 主进程
+// ============================================================================
+// 通过 process.send() 向父进程（IntentOS Desktop）发送 ready 消息
+// Desktop 通过 child_process.fork() 启动 SkillApp 时会建立此 IPC 通道
+if (process.send) {
+  process.send({ type: 'ready', appId: APP_ID });
+}
+
+// ============================================================================
+// 3. 应用生命周期处理
+// ============================================================================
+
+app.whenReady().then(async () => {
+  try {
+    // ===== Step 1: 初始化 SkillApp Runtime（M-06）=====
+    // Runtime 从环境变量读取 INTENTOS_APP_ID / INTENTOS_IPC_PATH
+    // 负责：建立 Unix Socket 连接、完成握手验证、加载权限缓存
+    await runtime.initialize();
+
+    // ===== Step 2: 创建 BrowserWindow =====
+    // 安全配置：contextIsolation + sandbox + nodeIntegration:false
+    mainWindow = new BrowserWindow({
+      width: 1024,
+      height: 768,
+      show: false, // 原地变形模式下先隐藏，由 Desktop 控制显示时机
+      webPreferences: {
+        // === 安全配置（三项必须全开） ===
+        contextIsolation: true,  // 必须启用：隔离渲染进程 JavaScript
+        nodeIntegration: false,  // 必须禁用：禁止直接调用 Node.js API
+        sandbox: true,           // 必须启用：Chromium 沙箱隔离
+
+        // === preload 脚本（绝对路径，必须指定） ===
+        preload: path.join(__dirname, 'preload.js'),
+
+        // === 其他安全配置 ===
+        enableRemoteModule: false,
+        webSecurity: true,
+        allowRunningInsecureContent: false,
+        nodeIntegrationInWorker: false,
+        nodeIntegrationInSubFrames: false,
+      },
+    });
+
+    // ===== Step 4: 导航安全限制 =====
+    // 仅允许加载本地 SkillApp 文件，禁止导航到外部 URL
+    mainWindow.webContents.on('will-navigate', (event, url) => {
+      // 仅允许本地 file:// 协议
+      const parsedUrl = new URL(url);
+      if (parsedUrl.protocol !== 'file:') {
+        event.preventDefault();
+        console.warn(`[Security] Blocked navigation to: ${url}`);
+      }
+    });
+
+    // 禁止打开新窗口（防止弹窗攻击）
+    mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+      if (url.startsWith('http')) {
+        // 外部链接用系统浏览器打开
+        require('electron').shell.openExternal(url);
+      }
+      return { action: 'deny' };
+    });
+
+    // ===== Step 5: 加载应用页面 =====
+    // 加载编译产物中的 index.html
+    mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
+
+    // 若为开发模式，打开 DevTools（可选）
+    if (process.env.NODE_ENV === 'development') {
+      mainWindow.webContents.openDevTools();
+    }
+
+    // ===== Step 6: 注册热更新处理器 =====
+    // 监听来自 IntentOS Desktop 的热更新推送
+    runtime.onHotUpdate(async (updatePackage) => {
+      try {
+        // Runtime 执行动态 import() 替换
+        await runtime.applyHotUpdate(updatePackage);
+        console.log(`[Runtime] Hot update applied: v${updatePackage.toVersion}`);
+      } catch (error) {
+        console.error('[Runtime] Hot update failed, will fallback:', error);
+        // Runtime 会自动降级为 webContents.reloadIgnoringCache()
+      }
+    });
+
+    // ===== Step 7: 报告应用就绪状态 =====
+    // 通知 IntentOS Desktop 该 SkillApp 已启动完成
+    // 此时 Desktop 可能继续执行「原地变形」动画
+    runtime.reportStatus('running');
+
+    // ===== Step 8: 窗口关闭事件 =====
+    mainWindow.on('closed', () => {
+      mainWindow = null;
+    });
+
+  } catch (error) {
+    console.error('[Runtime] Initialization failed:', error);
+    // 初始化失败，退出进程
+    app.quit();
+  }
+});
+
+// ===== 应用全部窗口关闭 =====
+app.on('window-all-closed', () => {
+  // 通知 IntentOS Desktop 应用正在停止
+  runtime.reportStatus('stopping');
+
+  // 清理运行时资源（IPC 连接、事件监听等）
+  runtime.destroy();
+
+  // macOS 惯例：保持应用在后台（除非用户明确退出）
+  // Windows/Linux 立即退出
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+// ===== 生命周期消息处理：lifecycle-shutdown =====
+// 接收 IntentOS Desktop 发来的关闭指令
+process.on('message', (msg) => {
+  if (!msg || typeof msg !== 'object') return;
+
+  if (msg.type === 'lifecycle-shutdown') {
+    console.log('[Lifecycle] Received shutdown signal from Desktop');
+    runtime.reportStatus('stopping');
+    runtime.destroy();
+    app.quit();
+  }
+
+  if (msg.type === 'lifecycle-focus') {
+    console.log('[Lifecycle] Received focus signal from Desktop');
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore();
+      }
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  }
+});
+
+// ===== macOS 重新激活处理 =====
+app.on('activate', () => {
+  if (mainWindow === null) {
+    // 若窗口被关闭但应用仍在，则重新创建窗口
+    // （此处代码假设窗口生命周期管理由 IntentOS Desktop 控制，
+    // 在正常使用中不会触发此分支）
+  }
+});
+
+// ============================================================================
+// 4. IPC Handler 注册
+// ============================================================================
+// runtime:callSkill / runtime:accessResource / runtime:requestPermission
+// 由 @intentos/skillapp-runtime 内部自动注册（调用 initRuntime() 时完成）。
+// 此处无需手动注册，避免 Electron 重复 handle 报错。
