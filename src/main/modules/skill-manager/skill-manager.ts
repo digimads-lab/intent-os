@@ -8,7 +8,82 @@ import path from 'path'
 import type { SkillRegistration } from '@intentos/shared-types'
 import type { SkillRecord } from './types'
 
-// ── Skill manifest as read from skill.json ────────────────────────────────────
+// ── Simple YAML frontmatter parser ────────────────────────────────────────────
+//
+// Supports a limited YAML subset sufficient for skill.md:
+//   - String scalars (with or without surrounding quotes)
+//   - Inline empty list: key: []
+//   - Block lists:
+//       key:
+//         - item1
+//         - item2
+//   - Comments (#) and blank lines are ignored
+// Does NOT support nested objects, booleans, numbers, or multi-line strings.
+
+function parseSkillMarkdown(content: string): Record<string, unknown> {
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+  if (!match) {
+    throw new Error('No valid YAML frontmatter found')
+  }
+  const yaml = match[1]
+  const result: Record<string, unknown> = {}
+  const lines = yaml.split(/\r?\n/)
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]
+    // Skip empty lines and comments
+    if (!line.trim() || line.trim().startsWith('#')) {
+      i++
+      continue
+    }
+    const colonIdx = line.indexOf(':')
+    if (colonIdx === -1) {
+      i++
+      continue
+    }
+    const key = line.slice(0, colonIdx).trim()
+    let value = line.slice(colonIdx + 1).trim()
+
+    // Strip surrounding single or double quotes from scalar values
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1)
+    }
+
+    // Inline empty list
+    if (value === '[]') {
+      result[key] = []
+      i++
+      continue
+    }
+
+    // Empty value — look ahead for block list items
+    if (value === '') {
+      const listItems: string[] = []
+      let j = i + 1
+      while (j < lines.length && /^\s+-\s*/.test(lines[j])) {
+        listItems.push(lines[j].replace(/^\s+-\s*/, '').trim())
+        j++
+      }
+      if (listItems.length > 0) {
+        result[key] = listItems
+        i = j
+        continue
+      }
+      result[key] = null
+      i++
+      continue
+    }
+
+    result[key] = value
+    i++
+  }
+  return result
+}
+
+// ── Skill manifest as read from skill.md ──────────────────────────────────────
 
 interface SkillManifestFile {
   id?: string
@@ -107,7 +182,7 @@ export class SkillManager {
   registerSkill(directoryPath: string): SkillRegistration {
     const meta = this.readSkillManifest(directoryPath)
     const skillId = `${meta.name}@${meta.version}`
-    const manifestPath = path.join(directoryPath, 'skill.json')
+    const manifestPath = path.join(directoryPath, 'skill.md')
 
     // Check for existing record by ID (same name+version)
     const existing = this.selectSkillById.get(skillId) as SkillRow | undefined
@@ -255,25 +330,25 @@ export class SkillManager {
       )
     }
 
-    const manifestPath = path.join(directoryPath, 'skill.json')
+    const manifestPath = path.join(directoryPath, 'skill.md')
     let manifestContent: string
     try {
       manifestContent = fs.readFileSync(manifestPath, 'utf-8')
     } catch (err) {
       throw new SkillManagerError(
         'IO_ERROR',
-        `Cannot read skill.json at ${manifestPath}`,
+        `Cannot read skill.md at ${manifestPath}`,
         err,
       )
     }
 
     let manifest: unknown
     try {
-      manifest = JSON.parse(manifestContent)
+      manifest = parseSkillMarkdown(manifestContent)
     } catch (err) {
       throw new SkillManagerError(
         'INVALID_SKILL_MANIFEST',
-        `Invalid JSON in skill.json at ${manifestPath}`,
+        `Invalid frontmatter in skill.md at ${manifestPath}`,
         err,
       )
     }
@@ -285,7 +360,7 @@ export class SkillManager {
     if (typeof raw !== 'object' || raw === null) {
       throw new SkillManagerError(
         'INVALID_SKILL_MANIFEST',
-        'skill.json must be a JSON object',
+        'skill.md frontmatter must be an object',
       )
     }
 
@@ -294,21 +369,21 @@ export class SkillManager {
     if (typeof obj['name'] !== 'string' || obj['name'].length === 0) {
       throw new SkillManagerError(
         'INVALID_SKILL_MANIFEST',
-        'skill.json missing required field: name',
+        'skill.md missing required field: name',
       )
     }
 
     if (typeof obj['version'] !== 'string' || !/^\d+\.\d+\.\d+$/.test(obj['version'])) {
       throw new SkillManagerError(
         'INVALID_SKILL_MANIFEST',
-        `skill.json field "version" must be semver (major.minor.patch), got: ${String(obj['version'])}`,
+        `skill.md field "version" must be semver (major.minor.patch), got: ${String(obj['version'])}`,
       )
     }
 
     if (typeof obj['entryPoint'] !== 'string' || obj['entryPoint'].length === 0) {
       throw new SkillManagerError(
         'INVALID_SKILL_MANIFEST',
-        'skill.json missing required field: entryPoint',
+        'skill.md missing required field: entryPoint',
       )
     }
 
@@ -316,7 +391,7 @@ export class SkillManager {
     if (!namePattern.test(obj['name'])) {
       throw new SkillManagerError(
         'INVALID_SKILL_MANIFEST',
-        `skill.json field "name" must match pattern [a-z0-9\\-_], got: ${obj['name']}`,
+        `skill.md field "name" must match pattern [a-z0-9\\-_], got: ${obj['name']}`,
       )
     }
 
