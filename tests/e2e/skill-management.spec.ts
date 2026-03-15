@@ -68,7 +68,7 @@ test('register local skill', async () => {
     )
     .toBeGreaterThan(0)
 
-  // Skill card shows the correct metadata from skill.json
+  // Skill card shows the correct metadata from skill.md
   const skillCard = skillList.locator('[data-testid="skill-item-test-skill-a"]')
   await expect(skillCard).toContainText('Test Skill A')
   await expect(skillCard).toContainText('1.0.0')
