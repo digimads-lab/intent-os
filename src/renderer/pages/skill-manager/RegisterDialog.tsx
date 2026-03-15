@@ -77,7 +77,7 @@ export function RegisterDialog({ onClose, onRegister }: RegisterDialogProps) {
               className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2.5 text-sm text-slate-200 placeholder-slate-600 font-mono focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             />
             <p className="text-xs text-slate-600">
-              目录下必须包含 <code className="text-slate-500">skill.json</code> 文件
+              目录下必须包含 <code className="text-slate-500">skill.md</code> 文件
             </p>
           </div>
 
