@@ -16,7 +16,13 @@ import { randomUUID } from "crypto";
 import { app } from "electron";
 import type { WebContents } from "electron";
 
-import type { AIProvider } from "../ai-provider/interfaces";
+import type { GenProgressChunk } from "@intentos/shared-types";
+import type { GenerateRequest } from "../ai-provider/interfaces";
+
+/** Narrow interface: anything that can generate code — AIProvider or AIProviderManager both satisfy this. */
+interface GenerateCapable {
+  generateCode(request: GenerateRequest): AsyncIterable<GenProgressChunk>
+}
 import type { LifecycleManager } from "../lifecycle-manager/lifecycle-manager";
 import type { PlanSessionManager } from "./plan-session";
 import { GeneratorError } from "./types";
@@ -30,7 +36,7 @@ import { GeneratorError } from "./types";
  */
 export class GenerateSessionManager {
   constructor(
-    private readonly aiProvider: AIProvider,
+    private readonly aiProvider: GenerateCapable,
     private readonly planSessionManager: PlanSessionManager,
     private readonly lifecycleManager: LifecycleManager,
   ) {}
@@ -159,7 +165,7 @@ async function writeSkillAppScaffold(
   skillIds: string[],
 ): Promise<void> {
   // 定位模板目录：开发时相对 __dirname，打包后相对 process.resourcesPath
-  const templateDir = path.resolve(__dirname, "../../../../src/skillapp-template");
+  const templateDir = path.resolve(__dirname, "../../src/skillapp-template");
 
   const replacements: Record<string, string> = {
     "{{APP_ID}}": appId,
