@@ -72,17 +72,18 @@ function createInMemoryDb(): Database.Database {
   return db
 }
 
-// ── Mock skill.json manifest content ─────────────────────────────────────────
+// ── Mock skill.md manifest content ────────────────────────────────────────────
 
-const MOCK_MANIFEST = {
-  name: 'test-skill',
-  version: '1.0.0',
-  description: 'Used for testing',
-  author: 'Test',
-  capabilities: ['test.run'],
-  dependencies: [],
-  entryPoint: 'src/index.ts',
-}
+const MOCK_MANIFEST = `---
+name: test-skill
+version: 1.0.0
+description: Used for testing
+author: Test
+capabilities:
+  - test.run
+dependencies: []
+entryPoint: src/index.ts
+---`
 
 const TEST_DIR = '/fake/skills/test-skill'
 const SKILL_ID = 'test-skill@1.0.0'
@@ -98,11 +99,11 @@ describe('SkillManager', () => {
   let readFileSyncSpy: MockInstance<any[], any>
 
   // Configure spies to simulate a readable directory + valid manifest
-  function setupValidSkillFs(manifestJson: string = JSON.stringify(MOCK_MANIFEST)): void {
+  function setupValidSkillFs(manifestContent: string = MOCK_MANIFEST): void {
     accessSyncSpy.mockImplementation(() => undefined)
     readFileSyncSpy.mockImplementation((filePath: unknown) => {
-      if (typeof filePath === 'string' && filePath.endsWith('skill.json')) {
-        return manifestJson
+      if (typeof filePath === 'string' && filePath.endsWith('skill.md')) {
+        return manifestContent
       }
       return ''
     })
@@ -324,7 +325,7 @@ describe('SkillManager', () => {
   // ── SQLite transaction — rollback on manifest read failure ───────────────────
 
   describe('SQLite transactions — rollback on failure', () => {
-    it('leaves the database unchanged when skill.json cannot be read', () => {
+    it('leaves the database unchanged when skill.md cannot be read', () => {
       // Directory accessible, but readFileSync throws
       accessSyncSpy.mockImplementation(() => undefined)
       readFileSyncSpy.mockImplementation(() => {
@@ -344,11 +345,11 @@ describe('SkillManager', () => {
       expect(manager.getInstalledSkills()).toHaveLength(0)
     })
 
-    it('leaves the database unchanged when skill.json contains invalid JSON', () => {
+    it('leaves the database unchanged when skill.md contains invalid frontmatter', () => {
       accessSyncSpy.mockImplementation(() => undefined)
       readFileSyncSpy.mockImplementation((filePath: unknown) => {
-        if (typeof filePath === 'string' && filePath.endsWith('skill.json')) {
-          return '{ this is not valid JSON }'
+        if (typeof filePath === 'string' && filePath.endsWith('skill.md')) {
+          return 'this is not valid frontmatter'
         }
         return ''
       })
@@ -357,15 +358,14 @@ describe('SkillManager', () => {
       expect(manager.getInstalledSkills()).toHaveLength(0)
     })
 
-    it('leaves the database unchanged when skill.json fails manifest validation (missing name)', () => {
-      const badManifest = JSON.stringify({
-        version: '1.0.0',
-        entryPoint: 'src/index.ts',
-        // name field intentionally omitted
-      })
+    it('leaves the database unchanged when skill.md fails manifest validation (missing name)', () => {
+      const badManifest = `---
+version: 1.0.0
+entryPoint: src/index.ts
+---`
       accessSyncSpy.mockImplementation(() => undefined)
       readFileSyncSpy.mockImplementation((filePath: unknown) => {
-        if (typeof filePath === 'string' && filePath.endsWith('skill.json')) {
+        if (typeof filePath === 'string' && filePath.endsWith('skill.md')) {
           return badManifest
         }
         return ''
@@ -454,6 +454,83 @@ describe('SkillManager', () => {
     it('does not throw when adding the same app reference twice (INSERT OR IGNORE)', () => {
       manager.addAppRef(SKILL_ID, 'app-001', 'App A')
       expect(() => manager.addAppRef(SKILL_ID, 'app-001', 'App A')).not.toThrow()
+    })
+  })
+
+  // ── frontmatter edge cases ────────────────────────────────────────────────────
+
+  describe('frontmatter edge cases', () => {
+    it('correctly parses a value containing a colon (description: "Intent OS: cool")', () => {
+      const manifest = `---
+name: test-skill
+version: 1.0.0
+description: Intent OS: cool
+author: Test
+entryPoint: src/index.ts
+capabilities: []
+dependencies: []
+---`
+      setupValidSkillFs(manifest)
+      const result = manager.registerSkill(TEST_DIR)
+      expect(result.description).toBe('Intent OS: cool')
+    })
+
+    it('correctly parses a value wrapped in double quotes', () => {
+      const manifest = `---
+name: test-skill
+version: 1.0.0
+description: "A quoted description"
+author: Test
+entryPoint: src/index.ts
+capabilities: []
+dependencies: []
+---`
+      setupValidSkillFs(manifest)
+      const result = manager.registerSkill(TEST_DIR)
+      expect(result.description).toBe('A quoted description')
+    })
+
+    it('correctly parses a value wrapped in single quotes', () => {
+      const manifest = `---
+name: test-skill
+version: 1.0.0
+description: 'single quoted'
+author: Test
+entryPoint: src/index.ts
+capabilities: []
+dependencies: []
+---`
+      setupValidSkillFs(manifest)
+      const result = manager.registerSkill(TEST_DIR)
+      expect(result.description).toBe('single quoted')
+    })
+
+    it('ignores markdown body after the closing --- delimiter', () => {
+      const manifest = `---
+name: test-skill
+version: 1.0.0
+description: only frontmatter
+entryPoint: src/index.ts
+capabilities: []
+dependencies: []
+---
+
+# test-skill
+
+This markdown body should be ignored by the parser.
+`
+      setupValidSkillFs(manifest)
+      const result = manager.registerSkill(TEST_DIR)
+      expect(result.name).toBe('test-skill')
+      expect(result.description).toBe('only frontmatter')
+    })
+
+    it('handles CRLF line endings in frontmatter', () => {
+      const manifest = '---\r\nname: test-skill\r\nversion: 1.0.0\r\nentryPoint: src/index.ts\r\ncapabilities: []\r\ndependencies: []\r\n---'
+      setupValidSkillFs(manifest)
+      const result = manager.registerSkill(TEST_DIR)
+      expect(result.name).toBe('test-skill')
+      expect(result.version).toBe('1.0.0')
     })
   })
 })
