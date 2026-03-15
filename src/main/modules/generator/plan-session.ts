@@ -12,7 +12,15 @@ import { randomUUID } from "crypto";
 
 import type { WebContents } from "electron";
 
-import type { AIProvider } from "../ai-provider/interfaces";
+import type { PlanResult, SkillMeta } from "@intentos/shared-types";
+import type { PlanRequest } from "../ai-provider/interfaces";
+import type { PlanChunk } from "@intentos/shared-types";
+
+/** Narrow interface: anything that can plan and cancel — AIProvider or AIProviderManager both satisfy this. */
+interface PlanCapable {
+  planApp(request: PlanRequest): AsyncIterable<PlanChunk>
+  cancelSession(sessionId: string): Promise<void>
+}
 import type { SkillManager } from "../skill-manager/skill-manager";
 import type {
   StartPlanRequest,
@@ -20,7 +28,6 @@ import type {
   ContextHistoryEntry,
 } from "./types";
 import { GeneratorError } from "./types";
-import type { PlanResult, SkillMeta } from "@intentos/shared-types";
 
 // ── 常量 ───────────────────────────────────────────────────────────────────────
 
@@ -44,7 +51,7 @@ export class PlanSessionManager {
   private readonly cleanupTimer: NodeJS.Timeout;
 
   constructor(
-    private readonly aiProvider: AIProvider,
+    private readonly aiProvider: PlanCapable,
     private readonly skillManager: SkillManager,
     private readonly getWindowSender: () => WebContents | null,
   ) {
