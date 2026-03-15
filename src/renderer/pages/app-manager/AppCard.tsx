@@ -1,5 +1,5 @@
 import { Trash2, Play, Square, Focus, Loader2 } from 'lucide-react'
-import type { AppRegistration } from '@intentos/shared-types'
+import type { AppRegistration, AppStatus } from '@intentos/shared-types'
 
 interface AppCardProps {
   app: AppRegistration
@@ -11,38 +11,42 @@ interface AppCardProps {
 
 // ── Status config ──────────────────────────────────────────────────────────────
 
-type AppStatus = AppRegistration['status']
-
 const STATUS_DOT: Record<AppStatus, string> = {
-  running:  'bg-emerald-400 shadow-[0_0_6px_2px_rgba(52,211,153,0.4)]',
-  starting: 'bg-amber-400',
-  updating: 'bg-amber-400',
-  stopped:  'bg-slate-500',
-  crashed:  'bg-red-400 shadow-[0_0_6px_2px_rgba(248,113,113,0.4)]',
+  registered:   'bg-slate-500',
+  running:      'bg-emerald-400 shadow-[0_0_6px_2px_rgba(52,211,153,0.4)]',
+  starting:     'bg-amber-400',
+  restarting:   'bg-amber-400',
+  uninstalling: 'bg-amber-400',
+  stopped:      'bg-slate-500',
+  crashed:      'bg-red-400 shadow-[0_0_6px_2px_rgba(248,113,113,0.4)]',
 }
 
 const STATUS_BADGE: Record<AppStatus, string> = {
-  running:  'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30',
-  starting: 'bg-amber-500/15 text-amber-400 border border-amber-500/30',
-  updating: 'bg-amber-500/15 text-amber-400 border border-amber-500/30',
-  stopped:  'bg-slate-600/40 text-slate-400 border border-slate-600/50',
-  crashed:  'bg-red-500/15 text-red-400 border border-red-500/30',
+  registered:   'bg-slate-600/40 text-slate-400 border border-slate-600/50',
+  running:      'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30',
+  starting:     'bg-amber-500/15 text-amber-400 border border-amber-500/30',
+  restarting:   'bg-amber-500/15 text-amber-400 border border-amber-500/30',
+  uninstalling: 'bg-amber-500/15 text-amber-400 border border-amber-500/30',
+  stopped:      'bg-slate-600/40 text-slate-400 border border-slate-600/50',
+  crashed:      'bg-red-500/15 text-red-400 border border-red-500/30',
 }
 
 const STATUS_LABEL: Record<AppStatus, string> = {
-  running:  '运行中',
-  starting: '启动中',
-  updating: '更新中',
-  stopped:  '已停止',
-  crashed:  '已崩溃',
+  registered:   '未启动',
+  running:      '运行中',
+  starting:     '启动中',
+  restarting:   '重启中',
+  uninstalling: '卸载中',
+  stopped:      '已停止',
+  crashed:      '已崩溃',
 }
 
-const TRANSITIONAL: AppStatus[] = ['starting', 'updating']
+const TRANSITIONAL: AppStatus[] = ['starting', 'restarting', 'uninstalling']
 
 export function AppCard({ app, onLaunch, onStop, onFocus, onUninstall }: AppCardProps) {
   const isTransitional = TRANSITIONAL.includes(app.status)
   const isRunning = app.status === 'running'
-  const isStopped = app.status === 'stopped' || app.status === 'crashed'
+  const isStopped = app.status === 'registered' || app.status === 'stopped' || app.status === 'crashed'
 
   return (
     <div className="group relative bg-slate-800 border border-slate-700 rounded-xl p-5 flex flex-col gap-3 hover:border-slate-600 hover:bg-slate-800/80 transition-all duration-200">
