@@ -42,13 +42,9 @@ export function registerGenerationHandlers(
   // Lazily create singletons on first registration so that mainWindow and
   // managers are fully initialised before use.
   if (planSessionManager === null) {
-    const provider = providerManager.getProvider()
-    if (provider === null) {
-      throw new Error('registerGenerationHandlers: AIProvider not yet set on providerManager')
-    }
-    planSessionManager = new PlanSessionManager(provider, skillManager, getWindowSender)
+    planSessionManager = new PlanSessionManager(providerManager, skillManager, getWindowSender)
     generateSessionManager = new GenerateSessionManager(
-      provider,
+      providerManager,
       planSessionManager,
       lifecycleManager,
     )
