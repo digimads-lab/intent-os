@@ -686,7 +686,7 @@ test('user state preservation after hot update', async ({ page }) => {
 ### 5.1 测试用例：注册本地 Skill
 
 **Given**：
-- 存在合法的 Skill 目录（`tests/fixtures/skills/test-skill-a/`，含 `skill.json`）
+- 存在合法的 Skill 目录（`tests/fixtures/skills/test-skill-a/`，含 `skill.md`）
 - Skill 管理中心已打开
 
 **When**：
@@ -1278,73 +1278,67 @@ npm run test:e2e
 ```
 tests/fixtures/skills/
 ├── test-skill-a/
-│   ├── skill.json
+│   ├── skill.md
 │   ├── package.json
 │   └── lib/
 │       └── index.ts
 └── test-skill-b/
-    ├── skill.json
+    ├── skill.md
     ├── package.json
     └── lib/
         └── index.ts
 ```
 
-**test-skill-a/skill.json**（符合 M-02 规范）：
+**test-skill-a/skill.md**（符合 M-02 规范）：
 
-```json
-{
-  "id": "test-skill-a",
-  "name": "Test Skill A",
-  "version": "1.0.0",
-  "description": "数据处理工具",
-  "author": "IntentOS Test Team",
-  "methods": [
-    {
-      "name": "processData",
-      "description": "处理数据",
-      "params": [
-        { "name": "input", "type": "string", "description": "输入数据" }
-      ],
-      "return": { "type": "object", "description": "处理结果" }
-    }
-  ],
-  "dependencies": [],
-  "permissions": ["fs.read", "fs.write"]
-}
+```markdown
+---
+name: test-skill-a
+version: 1.0.0
+description: 数据处理工具
+author: IntentOS Test Team
+entryPoint: lib/index.ts
+capabilities:
+  - fs.read
+  - fs.write
+dependencies: []
+---
+
+# test-skill-a
+
+数据处理工具，供 E2E 测试使用。
 ```
 
-**test-skill-b/skill.json**：
+**test-skill-b/skill.md**：
 
-```json
-{
-  "id": "test-skill-b",
-  "name": "Test Skill B",
-  "version": "1.0.0",
-  "description": "导出工具",
-  "author": "IntentOS Test Team",
-  "methods": [
-    {
-      "name": "exportToCSV",
-      "description": "导出为 CSV",
-      "params": [
-        { "name": "data", "type": "array", "description": "数据数组" }
-      ],
-      "return": { "type": "string", "description": "CSV 文件路径" }
-    }
-  ],
-  "dependencies": [],
-  "permissions": ["fs.write", "process.spawn"]
-}
+```markdown
+---
+name: test-skill-b
+version: 1.0.0
+description: 导出工具
+author: IntentOS Test Team
+entryPoint: lib/index.ts
+capabilities:
+  - fs.write
+  - process.spawn
+dependencies: []
+---
+
+# test-skill-b
+
+导出工具，供 E2E 测试使用。
 ```
 
-### 10.2 skill.json 格式要求
+### 10.2 skill.md 格式要求
 
-必须符合 M-02 Skill 管理器规范：
-- `id`、`name`、`version`、`description` 必须
-- `methods` 数组包含所有公开方法
-- 每个 method 包含 `name`、`description`、`params`、`return`
-- `dependencies` 可为空数组
-- `permissions` 列出所需的系统权限
+必须符合 M-02 Skill 管理器规范（YAML frontmatter）：
+- `name`、`version`、`entryPoint` 为必填字段
+- `name` 仅允许小写字母、数字、`-`、`_`，格式：`[a-z0-9\-_]+`
+- `version` 必须为 semver 格式：`major.minor.patch`
+- `entryPoint` 为相对路径，对应目录下的入口文件（如 `lib/index.ts`）
+- `capabilities` 为可选字符串数组，列出所需的系统能力
+- `dependencies` 可为空数组（`[]`）或 block list
+- frontmatter 之后可附带 Markdown 正文，解析器会忽略该部分
 
 ---
 
@@ -1355,7 +1349,7 @@ tests/fixtures/skills/
 - [ ] Claude Stub 已启动（或配置自动启动）
 - [ ] `ANTHROPIC_BASE_URL=http://localhost:3001` 已设置
 - [ ] `tests/fixtures/skills/` 目录已创建，包含 `test-skill-a/` 和 `test-skill-b/`
-- [ ] 每个 test-skill 目录下都有合法的 `skill.json`
+- [ ] 每个 test-skill 目录下都有合法的 `skill.md`
 - [ ] `test-reports/e2e/screenshots/` 目录存在（或会自动创建）
 - [ ] Playwright browsers 已安装：`npx playwright install`
 - [ ] 项目已构建：`npm run build`
