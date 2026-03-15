@@ -42,12 +42,27 @@ class ProviderError extends Error {
 // ── Helper: parse plan result from accumulated text ─────────────────────────
 
 function parsePlanResult(text: string): PlanResult | undefined {
-  const lastBrace = text.lastIndexOf('{')
-  if (lastBrace === -1) return undefined
+  // Walk backwards from the last '}' to find the matching '{' for the outermost JSON object.
+  // Using lastIndexOf('{') is wrong — it finds the last (innermost) '{', e.g. a nested module entry.
+  const lastClose = text.lastIndexOf('}')
+  if (lastClose === -1) return undefined
 
-  const candidate = text.slice(lastBrace)
+  let depth = 0
+  let start = -1
+  for (let i = lastClose; i >= 0; i--) {
+    if (text[i] === '}') depth++
+    else if (text[i] === '{') {
+      depth--
+      if (depth === 0) {
+        start = i
+        break
+      }
+    }
+  }
+  if (start === -1) return undefined
+
   try {
-    const parsed = JSON.parse(candidate)
+    const parsed = JSON.parse(text.slice(start, lastClose + 1))
     if (
       typeof parsed.appName === 'string' &&
       typeof parsed.description === 'string' &&
@@ -57,33 +72,7 @@ function parsePlanResult(text: string): PlanResult | undefined {
       return parsed as PlanResult
     }
   } catch {
-    let depth = 0
-    let end = -1
-    for (let i = lastBrace; i < text.length; i++) {
-      if (text[i] === '{') depth++
-      else if (text[i] === '}') {
-        depth--
-        if (depth === 0) {
-          end = i
-          break
-        }
-      }
-    }
-    if (end !== -1) {
-      try {
-        const parsed = JSON.parse(text.slice(lastBrace, end + 1))
-        if (
-          typeof parsed.appName === 'string' &&
-          typeof parsed.description === 'string' &&
-          Array.isArray(parsed.modules) &&
-          Array.isArray(parsed.skillUsage)
-        ) {
-          return parsed as PlanResult
-        }
-      } catch {
-        // Still failed
-      }
-    }
+    // parse failed
   }
   return undefined
 }
