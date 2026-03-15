@@ -671,7 +671,7 @@ interface AIProviderManager {
 ```typescript
 interface SkillManager {
   /**
-   * 注册一个本地 Skill（扫描目录、解析 skill.json、写入数据库）
+   * 注册一个本地 Skill（扫描目录、解析 skill.md、写入数据库）
    * @throws INVALID_SKILL_MANIFEST | SKILL_ALREADY_REGISTERED | IO_ERROR
    */
   registerSkill(dirPath: string): Promise<SkillMeta>;
@@ -724,7 +724,7 @@ interface SkillManager {
   scanLocalDirectory(dirPath: string): Promise<SkillMeta[]>;
 
   /**
-   * 刷新 Skill 元数据（重读 skill.json，内容变化则更新数据库）
+   * 刷新 Skill 元数据（重读 skill.md，内容变化则更新数据库）
    * @throws SKILL_NOT_FOUND | INVALID_SKILL_MANIFEST
    */
   refreshSkillMetadata(skillId: string): Promise<SkillMeta>;
@@ -1185,7 +1185,7 @@ sequenceDiagram
 | `SKILL_NOT_FOUND` | 指定 skillId 不存在 | 检查 skillId 格式是否正确 |
 | `SKILL_ALREADY_REGISTERED` | Skill 已注册（同名不同版本不允许） | 先卸载旧版本再注册 |
 | `SKILL_HAS_REFERENCES` | Skill 被 SkillApp 引用，无法卸载 | 先卸载引用该 Skill 的 SkillApp |
-| `INVALID_SKILL_MANIFEST` | skill.json 格式不合法 | 修复 skill.json 后重新注册 |
+| `INVALID_SKILL_MANIFEST` | skill.md frontmatter 格式不合法 | 修复 skill.md 后重新注册 |
 | `DEPENDENCY_MISSING` | 缺失依赖 Skill | 安装缺失的依赖 Skill |
 | `DEPENDENCY_CONFLICT` | 版本约束冲突 | 更新冲突 Skill 的版本 |
 | `IO_ERROR` | 文件 I/O 错误 | 检查文件系统权限 |
