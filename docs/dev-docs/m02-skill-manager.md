@@ -11,7 +11,7 @@
 
 M-02 Skill 管理器负责管理本地已安装 Skill 的完整生命周期。核心职责包括：
 
-- **Skill 注册**：扫描本地目录、解析 skill.json 元数据、写入 SQLite 数据库
+- **Skill 注册**：扫描本地目录、解析 skill.md 元数据、写入 SQLite 数据库
 - **Skill 卸载**：检查引用计数、验证无依赖后从数据库删除
 - **元数据管理**：维护 Skill 的 name、version、description、entryPoint、permissions、dependencies 等信息
 - **依赖检查**：验证 Skill 的所有依赖是否已安装且版本兼容
@@ -35,7 +35,7 @@ src/main/modules/skill-manager/
 ├── database.ts                 # SQLite 数据库初始化与 schema
 ├── types.ts                    # TypeScript 类型定义
 ├── scanner.ts                  # 本地目录扫描器
-├── manifest-parser.ts          # skill.json 解析与验证
+├── manifest-parser.ts          # skill.md 解析与验证
 ├── dependency-checker.ts       # 依赖检查逻辑
 ├── errors.ts                   # 错误码与错误类定义
 └── __tests__/
@@ -269,7 +269,7 @@ interface SkillManager {
   scanLocalDirectory(dirPath: string): Promise<SkillMeta>;
 
   /**
-   * 刷新已注册 Skill 的元数据（重新读取 skill.json）
+   * 刷新已注册 Skill 的元数据（重新读取 skill.md）
    * @param skillId Skill ID
    * @returns 更新后的元数据
    * @throws SkillManagerError.SKILL_NOT_FOUND | INVALID_SKILL_MANIFEST
@@ -387,42 +387,28 @@ type SkillManagerError =
 
 ## 5. Skill 元数据文件格式
 
-### 5.1 skill.json 完整 Schema
+### 5.1 skill.md 完整 Schema
 
-每个 Skill 目录根目录下必须包含 `skill.json` 文件，定义 Skill 的完整元数据。
+每个 Skill 目录根目录下必须包含 `skill.md` 文件，定义 Skill 的完整元数据。
 
-```json
-{
-  "name": "data-cleaner",
-  "version": "1.0.0",
-  "description": "清洗和转换 CSV/Excel 数据",
-  "author": "John Doe",
-  "license": "MIT",
-  "entryPoint": "dist/index.js",
-  "permissions": [
-    {
-      "resource": "fs",
-      "actions": ["read", "write"],
-      "scope": "user-selected"
-    },
-    {
-      "resource": "process",
-      "actions": ["spawn"],
-      "scope": "restricted"
-    }
-  ],
-  "dependencies": [
-    {
-      "name": "csv-parser",
-      "version": ">=1.5.0"
-    }
-  ],
-  "metadata": {
-    "category": "data-processing",
-    "tags": ["csv", "data", "excel"],
-    "icon": "data:image/png;base64,..."
-  }
-}
+```markdown
+---
+name: data-cleaner
+version: 1.0.0
+description: 清洗和转换 CSV/Excel 数据
+author: John Doe
+license: MIT
+entryPoint: dist/index.js
+capabilities:
+  - fs.read
+  - fs.write
+dependencies:
+  - csv-parser@>=1.5.0
+---
+
+# data-cleaner
+
+（可选）Markdown 格式的详细说明文档，供开发者阅读。此部分内容不会被解析器读取。
 ```
 
 ### 5.2 字段详解
@@ -434,7 +420,7 @@ type SkillManagerError =
 | `description` | string | 否 | Skill 简述（推荐），用于管理台展示 |
 | `author` | string | 否 | 作者名称 |
 | `license` | string | 否 | 许可证类型 |
-| `entryPoint` | string | 是 | 入口文件的相对路径（相对于 skill.json 所在目录） |
+| `entryPoint` | string | 是 | 入口文件的相对路径（相对于 skill.md 所在目录） |
 | `permissions` | array | 否 | 权限声明列表 |
 | `dependencies` | array | 否 | 依赖的其他 Skill 列表 |
 | `metadata` | object | 否 | 扩展元数据（category, tags, icon 等） |
@@ -488,9 +474,9 @@ interface SkillManifestValidation {
 ```
 1. 验证 dirPath 存在且可读
    ↓
-2. 读取 dirPath/skill.json
+2. 读取 dirPath/skill.md
    ↓
-3. 解析 JSON 并验证必填字段
+3. 解析 YAML frontmatter 并验证必填字段
    ↓
 4. 验证 version 格式和 entryPoint 文件存在
    ↓
@@ -512,8 +498,8 @@ interface SkillManifestValidation {
 
 **相同 skillId 已存在时的处理**：
 
-- 如果 skill.json 内容与数据库记录完全相同 → 返回现有记录，事务回滚，无副作用
-- 如果 skill.json 内容有更新（permissions/dependencies 变更）→ 更新数据库记录，发出 'updated' 事件
+- 如果 skill.md 内容与数据库记录完全相同 → 返回现有记录，事务回滚，无副作用
+- 如果 skill.md 内容有更新（permissions/dependencies 变更）→ 更新数据库记录，发出 'updated' 事件
 
 **检测内容变化的方法**：比较以下字段的哈希值：
 
@@ -535,10 +521,10 @@ async registerSkill(dirPath: string): Promise<SkillMeta> {
     // 1. 验证目录存在
     await fs.promises.access(dirPath, fs.constants.R_OK);
 
-    // 2. 读取 skill.json
-    const manifestPath = path.join(dirPath, 'skill.json');
+    // 2. 读取 skill.md
+    const manifestPath = path.join(dirPath, 'skill.md');
     const manifestContent = await fs.promises.readFile(manifestPath, 'utf-8');
-    const manifest = JSON.parse(manifestContent);
+    const manifest = parseSkillMarkdown(manifestContent);
 
     // 3. 验证清单
     validateSkillManifest(manifest);
@@ -881,7 +867,7 @@ enum SkillManagerErrorCode {
 | `SKILL_NOT_FOUND` | 404 | 指定 skillId 不存在 | "Skill 未找到" | 检查 skillId 是否正确 |
 | `SKILL_ALREADY_REGISTERED` | 409 | Skill 已注册（同名不同版本不允许） | "该 Skill 已注册" | 卸载旧版本后重新注册 |
 | `SKILL_HAS_REFERENCES` | 409 | Skill 有 SkillApp 引用，无法卸载 | "无法卸载：该 Skill 被以下应用引用：..." + 列表 | 卸载引用该 Skill 的 SkillApp |
-| `INVALID_SKILL_MANIFEST` | 400 | skill.json 内容不合法 | "Skill 配置文件无效：[详细原因]" | 修复 skill.json 后重新注册 |
+| `INVALID_SKILL_MANIFEST` | 400 | skill.md 内容不合法 | "Skill 配置文件无效：[详细原因]" | 修复 skill.md 后重新注册 |
 | `DEPENDENCY_MISSING` | 400 | 检查依赖时发现缺失的依赖 | "缺失依赖：[列表]，请先安装" | 安装缺失的依赖 Skill |
 | `DEPENDENCY_CONFLICT` | 400 | 版本约束冲突 | "版本冲突：[列表]" | 更新冲突 Skill 的版本 |
 | `IO_ERROR` | 500 | 文件 I/O 错误 | "文件读写失败：[原因]" | 检查文件系统权限 |
@@ -945,7 +931,7 @@ describe('registerSkill', () => {
     expect(result1).toEqual(result2);
   });
 
-  it('should fail if skill.json is invalid', async () => {
+  it('should fail if skill.md is invalid', async () => {
     const dirPath = await createTempSkill('invalid', '1.0.0', { name: '' }); // 缺少 name
     await expect(manager.registerSkill(dirPath))
       .rejects.toThrow(SkillManagerError);
@@ -962,7 +948,7 @@ describe('registerSkill', () => {
     const dirPath = await createTempSkill('data-cleaner', '1.0.0');
     await manager.registerSkill(dirPath);
 
-    // 修改 skill.json
+    // 修改 skill.md
     await updateSkillJson(dirPath, { description: 'New description' });
 
     const updated = await manager.registerSkill(dirPath);
@@ -1194,15 +1180,15 @@ async scanLocalDirectory(dirPath: string): Promise<SkillMeta[]> {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
 
-    const skillJsonPath = path.join(dirPath, entry.name, 'skill.json');
+    const manifestPath = path.join(dirPath, entry.name, 'skill.md');
 
-    // 检查是否存在 skill.json
-    if (!(await fileExists(skillJsonPath))) continue;
+    // 检查是否存在 skill.md
+    if (!(await fileExists(manifestPath))) continue;
 
     try {
-      // 解析 skill.json
-      const content = await fs.promises.readFile(skillJsonPath, 'utf-8');
-      const manifest = JSON.parse(content);
+      // 解析 skill.md frontmatter
+      const content = await fs.promises.readFile(manifestPath, 'utf-8');
+      const manifest = parseSkillMarkdown(content);
       validateSkillManifest(manifest);
 
       // 验证 entryPoint 存在
@@ -1260,7 +1246,7 @@ for (const skill of skillsPreview) {
 logger.info(`Registering Skill: ${skillId}`);
 logger.debug(`Database insert statement: ${stmt.source}`);
 logger.warn(`Skill ${skillId} has ${refCount} references, skipping unregister`);
-logger.error(`Failed to parse skill.json: ${error.message}`);
+logger.error(`Failed to parse skill.md: ${error.message}`);
 ```
 
 ### 17.2 可导出诊断信息
