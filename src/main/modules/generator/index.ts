@@ -9,6 +9,11 @@ export { GenerateSessionManager } from './generate-session'
 export { CompileFixer } from './compile-fixer'
 export { ModifySessionManager, createModifySessionManager } from './modify-session'
 export { confirmAndApplyModify } from './modify-generate'
+export { MockPreviewGenerator } from './mock-preview'
+export { GenerationPipeline } from './generation-pipeline'
+export { RuntimeVerifier } from './runtime-verifier'
+export { TemplateManager } from './template-manager'
+export { GenerationProgressTracker } from './progress-tracker'
 export { GeneratorError } from './types'
 export type {
   StartPlanRequest,
