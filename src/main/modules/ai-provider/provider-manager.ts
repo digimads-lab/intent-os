@@ -9,7 +9,7 @@
 import { EventEmitter } from "events";
 
 import type { ProviderStatus, ProviderConfig, PlanChunk, GenProgressChunk } from "./interfaces";
-import type { AIProvider, PlanRequest, GenerateRequest, SkillCallRequest, SkillCallResult } from "./interfaces";
+import type { AIProvider, PlanRequest, GenerateRequest, SkillCallRequest, SkillCallResult, StreamTextRequest, StreamTextChunk } from "./interfaces";
 import { RequestQueueManager } from "./request-queue";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -114,6 +114,20 @@ export class AIProviderManager {
       return await provider.executeSkill(request);
     } finally {
       this.skillQueue.complete(request.sessionId);
+    }
+  }
+
+  /**
+   * streamText — generic streaming text generation with a custom system prompt.
+   * Queued with plan/generate concurrency limit (max 1).
+   */
+  async *streamText(request: StreamTextRequest): AsyncIterable<StreamTextChunk> {
+    const provider = this._requireProvider();
+    await this.planQueue.enqueue(request.sessionId);
+    try {
+      yield* provider.streamText(request);
+    } finally {
+      this.planQueue.complete(request.sessionId);
     }
   }
 
