@@ -1,5 +1,5 @@
 import { ipcRenderer } from 'electron'
-import type { PlanChunk, GenProgressChunk } from '@intentos/shared-types'
+import type { PlanChunk, GenProgressChunk, PipelineStatus } from '@intentos/shared-types'
 
 export const generationAPI = {
   // 从 Skill + 意图启动规划
@@ -10,9 +10,25 @@ export const generationAPI = {
   refinePlan: (payload: { sessionId: string; feedback: string }): Promise<void> =>
     ipcRenderer.invoke('generation:refine-plan', payload),
 
+  // 请求 Mock 预览
+  requestMock: (payload: { sessionId: string }): Promise<void> =>
+    ipcRenderer.invoke('generation:request-mock', payload),
+
+  // 修改 Mock 预览
+  reviseMock: (payload: { sessionId: string; feedback: string }): Promise<void> =>
+    ipcRenderer.invoke('generation:revise-mock', payload),
+
+  // 确认 Mock 预览
+  approveMock: (payload: { sessionId: string }): Promise<void> =>
+    ipcRenderer.invoke('generation:approve-mock', payload),
+
   // 确认方案并开始生成
   confirmAndGenerate: (payload: { sessionId: string; appName: string }): Promise<{ sessionId: string; status: string }> =>
     ipcRenderer.invoke('generation:confirm-generate', payload),
+
+  // 启动生成管线
+  startPipeline: (payload: { sessionId: string; appName: string }): Promise<void> =>
+    ipcRenderer.invoke('generation:start-pipeline', payload),
 
   // 取消生成
   cancel: (sessionId: string): Promise<void> =>
@@ -30,6 +46,22 @@ export const generationAPI = {
   onGenProgress: (sessionId: string, cb: (chunk: GenProgressChunk) => void): (() => void) => {
     const channel = `ai-provider:gen-progress:${sessionId}`
     const handler = (_e: unknown, chunk: GenProgressChunk) => cb(chunk)
+    ipcRenderer.on(channel, handler)
+    return () => ipcRenderer.removeListener(channel, handler)
+  },
+
+  // 订阅 Mock HTML 预览
+  onMockHtml: (sessionId: string, cb: (data: { html: string; isPartial: boolean }) => void): (() => void) => {
+    const channel = `generation:mock-html:${sessionId}`
+    const handler = (_e: unknown, data: { html: string; isPartial: boolean }) => cb(data)
+    ipcRenderer.on(channel, handler)
+    return () => ipcRenderer.removeListener(channel, handler)
+  },
+
+  // 订阅管线状态
+  onPipelineStatus: (sessionId: string, cb: (status: PipelineStatus) => void): (() => void) => {
+    const channel = `generation:pipeline-status:${sessionId}`
+    const handler = (_e: unknown, status: PipelineStatus) => cb(status)
     ipcRenderer.on(channel, handler)
     return () => ipcRenderer.removeListener(channel, handler)
   },
