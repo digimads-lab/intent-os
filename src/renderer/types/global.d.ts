@@ -1,4 +1,4 @@
-import type { SkillRegistration, ProviderStatus, ProviderConfig, CustomProviderConfig, PlanChunk, GenProgressChunk, AppRegistration, AppStatusChanged } from '@intentos/shared-types'
+import type { SkillRegistration, ProviderStatus, ProviderConfig, CustomProviderConfig, PlanChunk, GenProgressChunk, AppRegistration, AppStatusChanged, PipelineStatus } from '@intentos/shared-types'
 
 // Inline the API shapes to avoid importing from preload (which pulls in Electron internals
 // not available in the renderer tsconfig).
@@ -64,9 +64,15 @@ interface GenerationAPIShape {
   startPlan: (payload: { skillIds: string[]; intent: string }) => Promise<{ sessionId: string; status: string }>
   refinePlan: (payload: { sessionId: string; feedback: string }) => Promise<void>
   confirmAndGenerate: (payload: { sessionId: string; appName: string }) => Promise<{ sessionId: string; status: string }>
+  requestMock: (payload: { sessionId: string }) => Promise<void>
+  reviseMock: (payload: { sessionId: string; feedback: string }) => Promise<void>
+  approveMock: (payload: { sessionId: string }) => Promise<void>
+  startPipeline: (payload: { sessionId: string; appName: string }) => Promise<void>
   cancel: (sessionId: string) => Promise<void>
   onPlanChunk: (sessionId: string, cb: (chunk: PlanChunk) => void) => () => void
   onGenProgress: (sessionId: string, cb: (chunk: GenProgressChunk) => void) => () => void
+  onMockHtml: (sessionId: string, cb: (data: { html: string; isPartial: boolean }) => void) => () => void
+  onPipelineStatus: (sessionId: string, cb: (status: PipelineStatus) => void) => () => void
 }
 
 interface ModificationAPIShape {
