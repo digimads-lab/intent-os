@@ -16,6 +16,7 @@ const runtime = require('@intentos/skillapp-runtime');
 const APP_ID = process.env.INTENTOS_APP_ID || '{{APP_ID}}';
 const IPC_SOCKET_PATH = process.env.INTENTOS_SOCKET_PATH;
 const DESKTOP_PID = process.env.INTENTOS_DESKTOP_PID;
+const IS_TEST_MODE = process.env.INTENTOS_TEST_MODE === '1';
 
 let mainWindow;
 
@@ -42,9 +43,9 @@ app.whenReady().then(async () => {
     // ===== Step 2: 创建 BrowserWindow =====
     // 安全配置：contextIsolation + sandbox + nodeIntegration:false
     mainWindow = new BrowserWindow({
-      width: 1024,
-      height: 768,
-      show: false, // 原地变形模式下先隐藏，由 Desktop 控制显示时机
+      width: IS_TEST_MODE ? 400 : 1024,
+      height: IS_TEST_MODE ? 300 : 768,
+      show: IS_TEST_MODE ? false : false, // 原地变形模式下先隐藏，由 Desktop 控制显示时机
       webPreferences: {
         // === 安全配置（三项必须全开） ===
         contextIsolation: true,  // 必须启用：隔离渲染进程 JavaScript
@@ -109,6 +110,16 @@ app.whenReady().then(async () => {
     // 通知 IntentOS Desktop 该 SkillApp 已启动完成
     // 此时 Desktop 可能继续执行「原地变形」动画
     runtime.reportStatus('running');
+
+    // ===== Test Mode: 输出就绪信号并自动退出 =====
+    if (IS_TEST_MODE) {
+      mainWindow.webContents.on('did-finish-load', () => {
+        process.stdout.write('INTENTOS_READY\n');
+        setTimeout(() => {
+          app.quit();
+        }, 5000);
+      });
+    }
 
     // ===== Step 8: 窗口关闭事件 =====
     mainWindow.on('closed', () => {
