@@ -19,6 +19,7 @@ function makeMockProvider(overrides: Partial<AIProvider> = {}): AIProvider {
     planApp: vi.fn().mockImplementation(async function* () {}),
     generateCode: vi.fn().mockImplementation(async function* () {}),
     executeSkill: vi.fn().mockResolvedValue({ success: true, data: 'ok' } as SkillCallResult),
+    streamText: vi.fn().mockImplementation(async function* () {}),
     cancelSession: vi.fn().mockResolvedValue(undefined),
     onStatusChanged: undefined,
     ...overrides,
