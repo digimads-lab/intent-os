@@ -1,10 +1,12 @@
 import { app } from 'electron'
+import fs from 'fs/promises'
+import path from 'path'
 
 import { electronApp, optimizer } from '@electron-toolkit/utils'
 
 import { intentOSApp } from './app'
 import { windowManager } from './window-manager'
-import { AIProviderBridge, AIProviderManager, ClaudeAPIProvider } from './modules/ai-provider'
+import { AIProviderBridge, AIProviderManager, ClaudeAPIProvider, CustomOpenAIProvider } from './modules/ai-provider'
 import { SkillManager, createDatabase } from './modules/skill-manager'
 import { registerSkillHandlers } from './ipc-handlers/skill-handlers'
 import { registerSettingsHandlers } from './ipc-handlers/settings-handlers'
@@ -13,6 +15,19 @@ import { registerModificationHandlers } from './ipc-handlers/modification-handle
 import { registerOnboardingHandlers } from './ipc-handlers/onboarding-handlers'
 import { registerAppHandlers } from './ipc-handlers/app-handlers'
 import { initSecurity } from './security'
+import type { CustomProviderConfig } from './modules/ai-provider/interfaces'
+
+async function loadSavedCustomConfig(): Promise<CustomProviderConfig | null> {
+  try {
+    const configFile = path.join(app.getPath('userData'), 'custom-provider-config.json')
+    const raw = await fs.readFile(configFile, 'utf8')
+    const parsed = JSON.parse(raw)
+    if (parsed && parsed.providerId === 'custom') return parsed as CustomProviderConfig
+    return null
+  } catch {
+    return null
+  }
+}
 
 app.whenReady().then(async () => {
   // Initialize security hardening after app is ready (session requires app ready)
@@ -39,10 +54,18 @@ app.whenReady().then(async () => {
 
   // M-04 AI Provider
   const providerManager = new AIProviderManager()
-  const claudeProvider = new ClaudeAPIProvider()
-  providerManager.setProvider(claudeProvider, { providerId: 'claude-api' }).catch(() => {
-    // API key 未配置，等待用户配置
-  })
+  const customConfig = await loadSavedCustomConfig()
+  if (customConfig) {
+    const customProvider = new CustomOpenAIProvider()
+    providerManager.setProvider(customProvider, customConfig).catch(() => {
+      // 连接失败，等待用户重新配置
+    })
+  } else {
+    const claudeProvider = new ClaudeAPIProvider()
+    providerManager.setProvider(claudeProvider, { providerId: 'claude-api' }).catch(() => {
+      // API key 未配置，等待用户配置
+    })
+  }
   const bridge = new AIProviderBridge(providerManager)
   bridge.registerHandlers()
   registerSettingsHandlers(providerManager)
