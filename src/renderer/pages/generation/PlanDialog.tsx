@@ -10,7 +10,7 @@ export function PlanDialog() {
     isPlanning,
     genError,
     refinePlan,
-    confirmGenerate,
+    requestMock,
     reset,
   } = useGenerationStore()
 
@@ -52,10 +52,9 @@ export function PlanDialog() {
   }
 
   const handleConfirm = async () => {
-    const name = appName.trim() || planResult?.appName || 'my-app'
     setShowNameInput(false)
     try {
-      await confirmGenerate(name)
+      await requestMock()
     } catch {
       // error stored in genError
     }
@@ -203,12 +202,12 @@ export function PlanDialog() {
           {/* Confirm button */}
           <button
             type="button"
-            onClick={() => setShowNameInput(true)}
+            onClick={() => void handleConfirm()}
             disabled={isPlanning || !planText}
             className="flex items-center justify-center gap-2 px-6 py-3 bg-green-600/90 hover:bg-green-600 disabled:bg-slate-700 disabled:text-slate-500 text-white text-sm font-medium rounded-xl transition-colors disabled:cursor-not-allowed"
           >
             <CheckCircle2 size={16} />
-            确认方案，开始生成
+            确认方案，预览界面
           </button>
 
           {/* Reset link */}
