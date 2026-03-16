@@ -1023,6 +1023,119 @@ type GeneratorErrorCode =
   | 'PLAN_RESULT_MISSING';
 ```
 
+### CR-002 新增：M-05 Mock 预览与 Pipeline 接口
+
+> **CR-002**：SkillApp 生成流程优化 — Mock 预览 + 模板引导 + 迭代验证
+
+#### 9.x MockPreviewGenerator 接口
+
+```typescript
+interface MockPreviewGenerator {
+  requestMockPreview(sessionId: string): Promise<void>;
+  reviseMock(sessionId: string, feedback: string): Promise<void>;
+  approveMock(sessionId: string): void;
+  isMockApproved(sessionId: string): boolean;
+}
+```
+
+#### 9.x GenerationPipeline 接口
+
+```typescript
+interface GenerationPipeline {
+  startPipeline(sessionId: string, appName: string, sender: WebContents | null): Promise<void>;
+  cancelPipeline(sessionId: string): void;
+}
+```
+
+#### 9.x RuntimeVerifier 接口
+
+```typescript
+interface RuntimeVerifyResult {
+  success: boolean;
+  attempt: number;
+  error?: string;
+  logs?: string;
+  exitCode?: number;
+}
+
+interface RuntimeVerifier {
+  verifyAndFix(
+    appDir: string,
+    entryPoint: string,
+    aiProvider: GenerateCapable,
+    sender: WebContents | null,
+    sessionId: string,
+  ): Promise<RuntimeVerifyResult>;
+}
+```
+
+#### 9.x GenerationProgressTracker 接口
+
+```typescript
+interface GenerationProgressTracker {
+  initPipeline(sessionId: string): void;
+  updateStage(sessionId: string, stageId: PipelineStageId, update: Partial<PipelineStageInfo>, sender: WebContents | null): void;
+  getStatus(sessionId: string): PipelineStatus | null;
+  cleanup(sessionId: string): void;
+}
+```
+
+#### 9.x Pipeline 共享类型（CR-002 新增到 @intentos/shared-types）
+
+```typescript
+type PipelineStageId = 'mock' | 'codegen' | 'compile' | 'test' | 'fix' | 'complete';
+type StageStatus = 'waiting' | 'running' | 'done' | 'failed' | 'skipped';
+
+interface PipelineStageInfo {
+  id: PipelineStageId;
+  label: string;
+  status: StageStatus;
+  progress?: number;
+  message?: string;
+  startedAt?: number;
+  completedAt?: number;
+  error?: string;
+}
+
+interface PipelineStatus {
+  sessionId: string;
+  stages: PipelineStageInfo[];
+  currentStage: PipelineStageId;
+  overallProgress: number;
+}
+```
+
+#### 9.x CR-002 新增 IPC Channel
+
+| Channel | 方向 | Request/Payload | Response |
+|---------|------|-----------------|----------|
+| `generation:request-mock` | invoke | `{ sessionId: string }` | `void` |
+| `generation:mock-html:{sessionId}` | send (主→渲染) | `{ html: string, isPartial: boolean }` | — |
+| `generation:revise-mock` | invoke | `{ sessionId: string, feedback: string }` | `void` |
+| `generation:approve-mock` | invoke | `{ sessionId: string }` | `void` |
+| `generation:start-pipeline` | invoke | `{ sessionId: string, appName: string }` | `void` |
+| `generation:pipeline-status:{sessionId}` | send (主→渲染) | `PipelineStatus` | — |
+
+#### 9.x CR-002 新增错误码
+
+| 错误码 | 模块 | 含义 |
+|--------|------|------|
+| `MOCK_GENERATION_FAILED` | M-05 | Mock 预览生成失败 |
+| `MOCK_SESSION_NOT_FOUND` | M-05 | Mock 会话不存在 |
+| `RUNTIME_VERIFY_FAILED` | M-05 | 运行验证最终失败（3 次重试后） |
+| `PIPELINE_CANCELLED` | M-05 | 用户取消了 Pipeline |
+
+#### 9.x PlanSessionState.status 扩展
+
+```typescript
+// 原: 'idle' | 'planning' | 'awaiting_feedback' | 'complete' | 'failed'
+// CR-002 新增:
+type PlanSessionStatus =
+  | 'idle' | 'planning' | 'awaiting_feedback' | 'complete' | 'failed'
+  | 'generating_mock'         // AI 正在生成 Mock 预览
+  | 'awaiting_mock_approval'  // Mock 预览已生成，等待用户确认
+```
+
 ---
 
 ## 10. M-06 Runtime 接口
