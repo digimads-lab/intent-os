@@ -1,9 +1,11 @@
 import { useEffect } from 'react'
-import { Wand2, MessageSquare, Zap } from 'lucide-react'
-import type { PlanChunk, GenProgressChunk } from '@intentos/shared-types'
+import { Wand2, MessageSquare, Eye, Zap, CheckCircle2 } from 'lucide-react'
+import type { PlanChunk, GenProgressChunk, PipelineStatus } from '@intentos/shared-types'
 import { useGenerationStore } from './generation-store'
 import { SkillSelector } from './SkillSelector'
 import { PlanDialog } from './PlanDialog'
+import { MockPreviewView } from './MockPreviewView'
+import { PipelineProgressView } from './PipelineProgressView'
 import { ProgressView } from './ProgressView'
 
 // ── Step indicator ─────────────────────────────────────────────────────────────
@@ -11,10 +13,14 @@ import { ProgressView } from './ProgressView'
 const STEPS = [
   { phase: 1 as const, icon: Wand2, label: '选择 Skill' },
   { phase: 2 as const, icon: MessageSquare, label: '规划方案' },
-  { phase: 3 as const, icon: Zap, label: '生成应用' },
+  { phase: 3 as const, icon: Eye, label: 'Mock 预览' },
+  { phase: 4 as const, icon: Zap, label: '生成应用' },
+  { phase: 5 as const, icon: CheckCircle2, label: '完成' },
 ]
 
-function StepIndicator({ current }: { current: 1 | 2 | 3 }) {
+type Phase = 1 | 2 | 3 | 4 | 5
+
+function StepIndicator({ current }: { current: Phase }) {
   return (
     <div className="flex items-center gap-0">
       {STEPS.map(({ phase, icon: Icon, label }, i) => {
@@ -53,7 +59,7 @@ function StepIndicator({ current }: { current: 1 | 2 | 3 }) {
             {/* Connector */}
             {i < STEPS.length - 1 && (
               <div
-                className={`h-px w-16 mb-5 mx-1 transition-colors ${
+                className={`h-px w-10 mb-5 mx-1 transition-colors ${
                   phase < current ? 'bg-green-600/50' : 'bg-slate-700'
                 }`}
               />
@@ -74,10 +80,13 @@ export function GenerationWindow() {
     appendPlanChunk,
     setPlanResult,
     setIsPlanning,
+    setMockHtml,
+    setPipelineStatus,
     setGenProgress,
     setIsGenerating,
     setGenError,
     setGenComplete,
+    setPhase,
   } = useGenerationStore()
 
   // Subscribe to IPC streams whenever we have a sessionId
@@ -87,6 +96,8 @@ export function GenerationWindow() {
     const generation = window.intentOS.generation as {
       onPlanChunk: (sessionId: string, cb: (chunk: PlanChunk) => void) => () => void
       onGenProgress: (sessionId: string, cb: (chunk: GenProgressChunk) => void) => () => void
+      onMockHtml: (sessionId: string, cb: (data: { html: string; isPartial: boolean }) => void) => () => void
+      onPipelineStatus: (sessionId: string, cb: (status: PipelineStatus) => void) => () => void
     }
 
     const aiProvider = window.intentOS.aiProvider
@@ -112,6 +123,24 @@ export function GenerationWindow() {
     const unsubPlanError = aiProvider.onPlanError(sessionId, (err) => {
       setIsPlanning(false)
       setGenError({ message: err.message, code: err.code })
+    })
+
+    // ── mock-html ────────────────────────────────────────────────────────────
+    const unsubMockHtml = generation.onMockHtml(sessionId, (data: { html: string; isPartial: boolean }) => {
+      setMockHtml(data.html, data.isPartial)
+    })
+
+    // ── pipeline-status ──────────────────────────────────────────────────────
+    const unsubPipelineStatus = generation.onPipelineStatus(sessionId, (status: PipelineStatus) => {
+      setPipelineStatus(status.stages, status.overallProgress, status.currentStage)
+
+      // Auto-transition to phase 5 when pipeline completes
+      const completeStage = status.stages.find((s) => s.id === 'complete')
+      if (completeStage?.status === 'done') {
+        setIsGenerating(false)
+        setGenComplete(true)
+        setPhase(5)
+      }
     })
 
     // ── gen-progress ─────────────────────────────────────────────────────────
@@ -146,6 +175,8 @@ export function GenerationWindow() {
       unsubPlanChunk()
       unsubPlanComplete()
       unsubPlanError()
+      unsubMockHtml()
+      unsubPipelineStatus()
       unsubGenProgress()
       unsubGenComplete()
       unsubGenError()
@@ -155,10 +186,13 @@ export function GenerationWindow() {
     appendPlanChunk,
     setPlanResult,
     setIsPlanning,
+    setMockHtml,
+    setPipelineStatus,
     setGenProgress,
     setIsGenerating,
     setGenError,
     setGenComplete,
+    setPhase,
   ])
 
   return (
@@ -182,7 +216,9 @@ export function GenerationWindow() {
         <div className="bg-slate-800/40 border border-slate-700 rounded-2xl p-6">
           {phase === 1 && <SkillSelector />}
           {phase === 2 && <PlanDialog />}
-          {phase === 3 && <ProgressView />}
+          {phase === 3 && <MockPreviewView />}
+          {phase === 4 && <PipelineProgressView />}
+          {phase === 5 && <PipelineProgressView />}
         </div>
       </div>
     </div>
