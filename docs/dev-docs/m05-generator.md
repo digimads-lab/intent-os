@@ -1026,3 +1026,333 @@ it('超过 30 分钟无操作的 session 应被自动清理', async () => {
 | 版本 | 日期 | 主要变更 |
 |------|------|---------|
 | 1.0 | 2026-03-13 | 初始文档，覆盖 PlanSession / GenerateSession / CompileFixer / ModifySession / ModifyGenerate 完整规范 |
+| 1.1 | 2026-03-15 | CR-002 更新：新增 MockPreviewGenerator、GenerationPipeline、RuntimeVerifier、ProgressTracker 规范 |
+
+---
+
+## CR-002 更新：生成流程优化新增模块
+
+> **CR-002**：SkillApp 生成流程优化 — Mock 预览 + 模板引导 + 迭代验证
+
+### 更新后的文件目录
+
+```
+src/main/modules/generator/
+├── plan-session.ts           # 规划会话管理（多轮交互、历史累积）
+├── generate-session.ts       # 生成会话管理（代码生成、进度上报）
+├── compile-fixer.ts          # 编译错误自动修复循环
+├── modify-session.ts         # 增量修改会话管理
+├── modify-generate.ts        # 增量生成执行
+├── mock-preview.ts           # CR-002 新增：Mock 预览生成器
+├── generation-pipeline.ts    # CR-002 新增：生成流水线编排
+├── runtime-verifier.ts       # CR-002 新增：运行时验证器
+├── progress-tracker.ts       # CR-002 新增：Pipeline 进度追踪器
+├── template-manager.ts       # CR-002 新增：模板管理器
+├── types.ts                  # 模块内部类型定义（CR-002 扩展）
+└── index.ts                  # 公开接口导出（CR-002 扩展）
+```
+
+### 更新后的 PlanSession 状态机
+
+```mermaid
+stateDiagram-v2
+    [*] --> idle
+    idle --> planning : startPlanSession()
+    planning --> awaiting_feedback : PlanChunk phase="complete"
+    awaiting_feedback --> planning : refinePlan()
+    awaiting_feedback --> generating_mock : requestMockPreview()
+    generating_mock --> awaiting_mock_approval : Mock HTML 生成完成
+    awaiting_mock_approval --> generating_mock : reviseMock(feedback)
+    awaiting_mock_approval --> confirmed : approveMock()
+    confirmed --> [*] : 触发 GenerationPipeline
+    awaiting_feedback --> failed : AI 返回错误
+    planning --> failed : 超时 / AI 返回错误
+    generating_mock --> failed : Mock 生成失败
+    failed --> [*]
+```
+
+### 11. MockPreviewGenerator 规范
+
+**文件**：`src/main/modules/generator/mock-preview.ts`
+
+#### 接口定义
+
+```typescript
+interface MockPreviewGenerator {
+  /**
+   * 请求生成 Mock 预览 HTML
+   * 从 PlanSessionManager 获取 PlanResult，调用 M-04 生成 Mock HTML
+   * 通过 IPC generation:mock-html:{sessionId} 推送到渲染进程
+   */
+  requestMockPreview(sessionId: string): Promise<void>;
+
+  /**
+   * 用户反馈修改 Mock
+   * 将反馈追加到 Mock 对话历史，重新生成 Mock HTML
+   */
+  reviseMock(sessionId: string, feedback: string): Promise<void>;
+
+  /**
+   * 用户确认 Mock，标记为可以开始代码生成
+   */
+  approveMock(sessionId: string): void;
+
+  /**
+   * 获取当前 Mock 审批状态
+   */
+  isMockApproved(sessionId: string): boolean;
+}
+```
+
+#### Mock 生成 Prompt
+
+```typescript
+function buildMockPrompt(planResult: PlanResult, skills: SkillMeta[]): string
+```
+
+Prompt 要求 AI 生成一个自包含 HTML 文件：
+- 内联 CSS，深色主题，现代 UI 风格
+- 展示所有页面布局，使用 tab 切换
+- 标注交互元素的功能说明
+- 不含 JavaScript 脚本（静态布局展示）
+- 不含外部资源链接
+
+#### HTML 安全处理
+
+```typescript
+function sanitizeMockHtml(html: string): string
+```
+
+处理步骤：
+1. 移除所有 `<script>` 标签
+2. 移除所有事件处理属性（onclick, onload 等）
+3. 移除所有外部资源引用
+4. 注入 CSP meta 标签：`default-src 'none'; style-src 'unsafe-inline';`
+
+#### IPC 通道
+
+| Channel | 方向 | Payload |
+|---------|------|---------|
+| `generation:request-mock` | 渲染→主 | `{ sessionId: string }` |
+| `generation:mock-html:{sessionId}` | 主→渲染 | `{ html: string, isPartial: boolean }` |
+| `generation:revise-mock` | 渲染→主 | `{ sessionId: string, feedback: string }` |
+| `generation:approve-mock` | 渲染→主 | `{ sessionId: string }` |
+
+### 12. GenerationPipeline 规范
+
+**文件**：`src/main/modules/generator/generation-pipeline.ts`
+
+#### 接口定义
+
+```typescript
+interface GenerationPipeline {
+  /**
+   * 启动完整生成流水线
+   * 按顺序执行：Mock(已完成) → 代码生成 → 编译 → 运行测试 → (修复迭代) → 完成
+   */
+  startPipeline(
+    sessionId: string,
+    appName: string,
+    sender: WebContents | null,
+  ): Promise<void>;
+
+  /**
+   * 取消正在执行的流水线
+   */
+  cancelPipeline(sessionId: string): void;
+}
+```
+
+#### Pipeline 阶段定义
+
+```typescript
+type PipelineStageId = 'mock' | 'codegen' | 'compile' | 'test' | 'fix' | 'complete'
+type StageStatus = 'waiting' | 'running' | 'done' | 'failed' | 'skipped'
+
+interface PipelineStageInfo {
+  id: PipelineStageId
+  label: string
+  status: StageStatus
+  progress?: number      // 0-100
+  message?: string
+  startedAt?: number
+  completedAt?: number
+  error?: string
+}
+
+interface PipelineStatus {
+  sessionId: string
+  stages: PipelineStageInfo[]
+  currentStage: PipelineStageId
+  overallProgress: number  // 0-100
+}
+```
+
+#### 流水线执行流程
+
+```
+1. 标记 mock 阶段为 done（Mock 已在 Pipeline 启动前完成）
+2. 执行代码生成阶段（复用 GenerateSessionManager 核心逻辑）
+   - 注入模板引导（通过 TemplateManager）
+   - 消费 GenProgressChunk 流
+   - 通过 ProgressTracker 广播进度
+3. 执行编译阶段
+   - 编译失败时通过 CompileFixer 修复（最多 3 次）
+4. 执行运行测试阶段（调用 RuntimeVerifier）
+   - 测试失败时进入修复阶段
+   - 修复后重新编译+测试（最多 3 次）
+5. 所有阶段通过后，注册 App 并标记完成
+```
+
+### 13. RuntimeVerifier 规范
+
+**文件**：`src/main/modules/generator/runtime-verifier.ts`
+
+#### 接口定义
+
+```typescript
+interface RuntimeVerifyResult {
+  success: boolean
+  attempt: number        // 当前第几次尝试（1-3）
+  error?: string
+  logs?: string          // stderr 输出
+  exitCode?: number
+}
+
+interface RuntimeVerifier {
+  /**
+   * 执行运行验证并在失败时自动修复
+   * @param appDir SkillApp 根目录
+   * @param entryPoint 入口文件名（如 main.js）
+   * @returns 验证结果
+   */
+  verifyAndFix(
+    appDir: string,
+    entryPoint: string,
+    aiProvider: GenerateCapable,
+    sender: WebContents | null,
+    sessionId: string,
+  ): Promise<RuntimeVerifyResult>;
+}
+```
+
+#### 验证机制
+
+- 通过 `child_process.spawn` 启动 SkillApp 测试进程
+- 注入环境变量 `INTENTOS_TEST_MODE=1`
+- 监听 stdout 中的 `INTENTOS_READY\n` 信号
+- 超时 10s 未收到信号判定为失败
+- 收集 stderr 日志用于 AI 修复
+
+### 14. TemplateManager 规范
+
+**文件**：`src/main/modules/generator/template-manager.ts`
+
+#### 接口定义
+
+```typescript
+interface TemplateManager {
+  /** 初始化：读取模板文件并缓存 */
+  initialize(): Promise<void>;
+
+  /** 获取模板说明文档内容 */
+  getTemplateGuide(): string;
+
+  /** 获取关键模板示例代码 */
+  getTemplateExamples(): string;
+}
+```
+
+模板内容在 `GenerateSessionManager` 调用 `generateCode()` 时注入到系统 prompt 中。
+
+### 15. GenerationProgressTracker 规范
+
+**文件**：`src/main/modules/generator/progress-tracker.ts`
+
+#### 接口定义
+
+```typescript
+interface GenerationProgressTracker {
+  /** 初始化 Pipeline 阶段列表 */
+  initPipeline(sessionId: string): void;
+
+  /** 更新某个阶段的状态 */
+  updateStage(
+    sessionId: string,
+    stageId: PipelineStageId,
+    update: Partial<PipelineStageInfo>,
+    sender: WebContents | null,
+  ): void;
+
+  /** 获取当前 Pipeline 状态 */
+  getStatus(sessionId: string): PipelineStatus | null;
+
+  /** 清理会话 */
+  cleanup(sessionId: string): void;
+}
+```
+
+#### IPC 推送
+
+通过 `generation:pipeline-status:{sessionId}` 通道推送 `PipelineStatus`。
+
+进度权重分配：
+| 阶段 | 进度区间 |
+|------|---------|
+| mock | 0-15% |
+| codegen | 15-50% |
+| compile | 50-70% |
+| test | 70-90% |
+| complete | 90-100% |
+
+### CR-002 新增错误码
+
+```typescript
+type GeneratorErrorCode =
+  | ... // 现有错误码
+  | 'MOCK_GENERATION_FAILED'     // Mock 预览生成失败
+  | 'MOCK_SESSION_NOT_FOUND'     // Mock 会话不存在
+  | 'RUNTIME_VERIFY_FAILED'      // 运行验证最终失败（3 次重试后）
+  | 'PIPELINE_CANCELLED'         // 用户取消了 Pipeline
+```
+
+### CR-002 新增测试要点
+
+#### Mock 预览生成
+
+```typescript
+it('应生成安全的 HTML（无 script 标签、无事件处理器）', async () => {
+  // Mock AI 返回包含 <script> 的 HTML
+  // 验证 sanitizeMockHtml 移除了脚本
+})
+
+it('reviseMock 应将反馈追加到对话历史并重新生成', async () => {
+  // 验证 M-04 planApp 收到的 contextHistory 包含前轮 Mock 对话
+})
+```
+
+#### 运行验证
+
+```typescript
+it('应在 10s 超时后判定启动失败', async () => {
+  // spawn 一个不发送 INTENTOS_READY 的进程
+  // 验证 10s 后返回 { success: false }
+})
+
+it('应在 3 次验证失败后返回 RUNTIME_VERIFY_FAILED', async () => {
+  // Mock AI 修复始终无效
+  // 验证最多 3 次尝试后返回错误
+})
+```
+
+#### Pipeline 编排
+
+```typescript
+it('应按顺序执行 mock → codegen → compile → test → complete', async () => {
+  // 验证 ProgressTracker 收到的阶段更新顺序正确
+})
+
+it('test 失败时应进入 fix → recompile → retest 循环', async () => {
+  // 第一次 test 失败，AI 修复后第二次通过
+  // 验证 fix 阶段被触发
+})
