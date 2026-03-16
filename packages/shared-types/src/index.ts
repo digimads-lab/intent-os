@@ -80,3 +80,17 @@ export type { IPCResult, ConnectionStatus } from "./ipc.js";
 // ── Update ────────────────────────────────────────────────────────────────────
 export { UpdatePackageSchema } from "./update.js";
 export type { UpdatePackage } from "./update.js";
+
+// ── Pipeline (CR-002) ────────────────────────────────────────────────────────
+export {
+  PipelineStageIdSchema,
+  StageStatusSchema,
+  PipelineStageInfoSchema,
+  PipelineStatusSchema,
+} from "./pipeline.js";
+export type {
+  PipelineStageId,
+  StageStatus,
+  PipelineStageInfo,
+  PipelineStatus,
+} from "./pipeline.js";
