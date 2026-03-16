@@ -23,6 +23,8 @@ import type {
   GenerateRequest,
   SkillCallRequest,
   SkillCallResult,
+  StreamTextRequest,
+  StreamTextChunk,
 } from './interfaces'
 import type {
   ProviderStatus,
@@ -73,7 +75,49 @@ Output a valid JSON object with the following structure at the end of your respo
   ]
 }
 
-Think through the design carefully, then output the JSON block.`
+## 交互规则
+
+**如果用户意图缺少关键细节**（如未说明具体功能、使用场景不明确），请用以下格式追问：
+
+---
+我需要了解一些细节来设计最合适的应用：
+
+**[简短问题标题]**
+- A. [选项A描述]
+- B. [选项B描述]
+- C. 其他（请描述）
+
+**[简短问题标题2]**（如需要）
+- A. [选项A描述]
+- B. [选项B描述]
+
+请回复选项字母，或直接描述你的想法。输入「直接生成」可让我立即根据现有信息生成方案。
+---
+
+每轮最多问 2-3 个问题，选项要简洁。
+
+**当你收集到足够信息后**（来自初始意图或追问回答），请用以下格式输出方案：
+
+---
+好的，根据你的需求，我来设计这个应用：
+
+[1-2 句话描述设计思路]
+
+\`\`\`json
+{
+  "appName": "...",
+  "description": "...",
+  "modules": [
+    { "name": "...", "description": "...", "filePath": "..." }
+  ],
+  "skillUsage": [
+    { "skillId": "...", "methods": ["..."] }
+  ]
+}
+\`\`\`
+---
+
+JSON 块必须始终用 \`\`\`json ... \`\`\` 代码围栏包裹。`
 }
 
 // ── Helper: build messages array ───────────────────────────────────────────────
@@ -343,6 +387,61 @@ export class ClaudeAPIProvider implements AIProvider {
 
     // Clean up controller after the retry loop exits (success or final failure)
     this.controllers.delete(request.sessionId)
+  }
+
+  // ── streamText ───────────────────────────────────────────────────────────────
+
+  async *streamText(request: StreamTextRequest): AsyncIterable<StreamTextChunk> {
+    if (!this.anthropic || !this.config) {
+      throw new ProviderError('PROVIDER_ERROR', 'Provider is not initialized.', false)
+    }
+
+    const controller = new AbortController()
+    this.controllers.set(request.sessionId, controller)
+
+    try {
+      const messages: Anthropic.MessageParam[] = request.messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+      }))
+
+      const stream = this.anthropic.messages.stream(
+        {
+          model: this.config.claudeModel ?? 'claude-opus-4-6',
+          max_tokens: 8192,
+          system: request.systemPrompt,
+          messages,
+        },
+        { signal: controller.signal },
+      )
+
+      for await (const event of stream) {
+        if (
+          event.type === 'content_block_delta' &&
+          event.delta.type === 'text_delta'
+        ) {
+          yield {
+            sessionId: request.sessionId,
+            content: event.delta.text,
+            done: false,
+          } satisfies StreamTextChunk
+        }
+      }
+
+      yield {
+        sessionId: request.sessionId,
+        content: '',
+        done: true,
+      } satisfies StreamTextChunk
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        yield { sessionId: request.sessionId, content: '', done: true } satisfies StreamTextChunk
+      } else {
+        throw err
+      }
+    } finally {
+      this.controllers.delete(request.sessionId)
+    }
   }
 
   // ── generateCode ─────────────────────────────────────────────────────────────
