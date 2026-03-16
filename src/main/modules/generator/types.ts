@@ -46,7 +46,7 @@ export interface ContextHistoryEntry {
  */
 export interface PlanSessionState {
   sessionId: string;
-  status: "idle" | "planning" | "awaiting_feedback" | "complete" | "failed";
+  status: "idle" | "planning" | "awaiting_feedback" | "generating_mock" | "awaiting_mock_approval" | "complete" | "failed";
   request: StartPlanRequest;
   contextHistory: ContextHistoryEntry[];
   lastPlanResult: PlanResult | null;
@@ -149,7 +149,11 @@ export type GeneratorErrorCode =
   | "MODIFY_SESSION_EXPIRED" // 增量修改会话已超时清理
   | "MODIFY_SESSION_WRONG_STATE" // 修改会话状态不允许当前操作
   | "APP_DIR_NOT_FOUND" // 目标 SkillApp 目录不存在（修改时）
-  | "PLAN_RESULT_MISSING"; // 尝试 confirmAndGenerate 时规划结果为 null
+  | "PLAN_RESULT_MISSING" // 尝试 confirmAndGenerate 时规划结果为 null
+  | "MOCK_GENERATION_FAILED" // Mock 预览生成失败
+  | "MOCK_SESSION_NOT_FOUND" // Mock 会话不存在
+  | "RUNTIME_VERIFY_FAILED" // 运行时验证失败
+  | "PIPELINE_CANCELLED"; // 生成管线被用户取消
 
 /**
  * M-05 生成器模块统一错误类
