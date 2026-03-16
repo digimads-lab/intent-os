@@ -21,11 +21,15 @@ import type { AIProviderManager } from '../modules/ai-provider'
 import type { SkillManager } from '../modules/skill-manager'
 import { PlanSessionManager } from '../modules/generator/plan-session'
 import { GenerateSessionManager } from '../modules/generator/generate-session'
+import { MockPreviewGenerator } from '../modules/generator/mock-preview'
+import { GenerationPipeline } from '../modules/generator/generation-pipeline'
 
 // ── Module-level singletons ────────────────────────────────────────────────────
 
 let planSessionManager: PlanSessionManager | null = null
 let generateSessionManager: GenerateSessionManager | null = null
+let mockPreviewGenerator: MockPreviewGenerator | null = null
+let generationPipeline: GenerationPipeline | null = null
 
 // ── Handler registration ───────────────────────────────────────────────────────
 
@@ -48,10 +52,18 @@ export function registerGenerationHandlers(
       planSessionManager,
       lifecycleManager,
     )
+    mockPreviewGenerator = new MockPreviewGenerator(providerManager)
+    generationPipeline = new GenerationPipeline(
+      providerManager,
+      planSessionManager,
+      lifecycleManager,
+    )
   }
 
   const psm = planSessionManager
   const gsm = generateSessionManager!
+  const mpg = mockPreviewGenerator!
+  const gpl = generationPipeline!
 
   // generation:start-plan — register session immediately, stream in background
   // Returns sessionId synchronously so the renderer can subscribe to plan-chunk events
@@ -96,7 +108,55 @@ export function registerGenerationHandlers(
   ipcHub.register('generation:cancel', async (_event, { sessionId }: { sessionId: string }) => {
     try {
       psm.cancelPlanSession(sessionId)
+      gpl.cancelPipeline(sessionId)
       return { success: true, data: { success: true } }
+    } catch (err: any) {
+      return { success: false, error: err.message, code: err.code }
+    }
+  })
+
+  // generation:request-mock — generate mock HTML preview
+  ipcHub.register('generation:request-mock', async (event, { sessionId }: { sessionId: string }) => {
+    try {
+      const planResult = await psm.getPlanResult(sessionId)
+      if (!planResult) {
+        return { success: false, error: 'Plan result not found', code: 'PLAN_RESULT_MISSING' }
+      }
+      // Fire-and-forget — mock HTML is streamed via generation:mock-html:{sessionId}
+      mpg.requestMockPreview(sessionId, planResult, [], event.sender).catch(() => {})
+      return { success: true, data: { status: 'generating-mock' } }
+    } catch (err: any) {
+      return { success: false, error: err.message, code: err.code }
+    }
+  })
+
+  // generation:revise-mock — revise mock with feedback
+  ipcHub.register('generation:revise-mock', async (_event, { sessionId, feedback }: { sessionId: string; feedback: string }) => {
+    try {
+      await mpg.reviseMock(sessionId, feedback)
+      return { success: true, data: { status: 'revising-mock' } }
+    } catch (err: any) {
+      return { success: false, error: err.message, code: err.code }
+    }
+  })
+
+  // generation:approve-mock — approve mock and proceed
+  ipcHub.register('generation:approve-mock', async (_event, { sessionId }: { sessionId: string }) => {
+    try {
+      mpg.approveMock(sessionId)
+      return { success: true, data: { status: 'mock-approved' } }
+    } catch (err: any) {
+      return { success: false, error: err.message, code: err.code }
+    }
+  })
+
+  // generation:start-pipeline — start the full generation pipeline
+  ipcHub.register('generation:start-pipeline', async (event, { sessionId, appName }: { sessionId: string; appName: string }) => {
+    try {
+      const name = appName ?? 'my-app'
+      // Fire-and-forget — progress is streamed via generation:pipeline-status:{sessionId}
+      gpl.startPipeline(sessionId, name, event.sender).catch(() => {})
+      return { success: true, data: { status: 'pipeline-started' } }
     } catch (err: any) {
       return { success: false, error: err.message, code: err.code }
     }
