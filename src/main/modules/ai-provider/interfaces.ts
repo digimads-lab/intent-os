@@ -48,6 +48,18 @@ export interface GenerateRequest {
   targetDir: string;
 }
 
+export interface StreamTextRequest {
+  sessionId: string;
+  systemPrompt: string;
+  messages: Array<{ role: "user" | "assistant"; content: string }>;
+}
+
+export interface StreamTextChunk {
+  sessionId: string;
+  content: string;
+  done: boolean;
+}
+
 export interface SkillCallRequest {
   sessionId: string;
   skillId: string;
@@ -97,6 +109,12 @@ export interface AIProvider {
    * @returns Promise (non-streaming; waits for the full execution result)
    */
   executeSkill(request: SkillCallRequest): Promise<SkillCallResult>;
+
+  /**
+   * Generic streaming text generation with a custom system prompt.
+   * Used by MockPreviewGenerator to generate HTML without the planning system prompt.
+   */
+  streamText(request: StreamTextRequest): AsyncIterable<StreamTextChunk>;
 
   /** Cancel an in-progress session */
   cancelSession(sessionId: string): Promise<void>;
