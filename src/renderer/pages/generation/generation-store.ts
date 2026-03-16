@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { PlanChunk, PlanResult } from '@intentos/shared-types'
+import type { PlanChunk, PlanResult, PipelineStageInfo } from '@intentos/shared-types'
 
 export interface GenProgress {
   stage: 'codegen' | 'compile' | 'bundle' | 'complete' | 'error'
@@ -12,9 +12,11 @@ export interface GenError {
   code: string
 }
 
+// Phase: 1 = Skill selection, 2 = planning, 3 = mock preview, 4 = pipeline progress, 5 = complete
+type Phase = 1 | 2 | 3 | 4 | 5
+
 interface GenerationStore {
-  // Phase: 1 = Skill selection + intent, 2 = planning interaction, 3 = generation progress
-  phase: 1 | 2 | 3
+  phase: Phase
   sessionId: string | null
 
   // Phase 2: planning
@@ -22,18 +24,29 @@ interface GenerationStore {
   planResult: PlanResult | null
   isPlanning: boolean
 
-  // Phase 3: generation progress
+  // Phase 3: mock preview
+  mockHtml: string
+  isMockPartial: boolean
+
+  // Phase 4: pipeline progress (replaces old phase 3)
+  pipelineStages: PipelineStageInfo[]
+  pipelineOverallProgress: number
+  pipelineCurrentStage: string | null
+
+  // Legacy gen progress (for backward compat)
   genProgress: GenProgress | null
   isGenerating: boolean
   genError: GenError | null
   genComplete: boolean
 
   // actions
-  setPhase: (phase: 1 | 2 | 3) => void
+  setPhase: (phase: Phase) => void
   setSessionId: (id: string) => void
   appendPlanChunk: (chunk: PlanChunk) => void
   setPlanResult: (result: PlanResult) => void
   setIsPlanning: (v: boolean) => void
+  setMockHtml: (html: string, isPartial: boolean) => void
+  setPipelineStatus: (stages: PipelineStageInfo[], overallProgress: number, currentStage: string | null) => void
   setGenProgress: (p: GenProgress) => void
   setIsGenerating: (v: boolean) => void
   setGenError: (e: GenError | null) => void
@@ -41,19 +54,27 @@ interface GenerationStore {
 
   startPlan: (skillIds: string[], intent: string) => Promise<void>
   refinePlan: (feedback: string) => Promise<void>
+  requestMock: () => Promise<void>
+  reviseMock: (feedback: string) => Promise<void>
+  approveMock: () => Promise<void>
   confirmGenerate: (appName: string) => Promise<void>
   reset: () => void
 }
 
 const initialState = {
-  phase: 1 as const,
-  sessionId: null,
-  planChunks: [],
-  planResult: null,
+  phase: 1 as Phase,
+  sessionId: null as string | null,
+  planChunks: [] as PlanChunk[],
+  planResult: null as PlanResult | null,
   isPlanning: false,
-  genProgress: null,
+  mockHtml: '',
+  isMockPartial: false,
+  pipelineStages: [] as PipelineStageInfo[],
+  pipelineOverallProgress: 0,
+  pipelineCurrentStage: null as string | null,
+  genProgress: null as GenProgress | null,
   isGenerating: false,
-  genError: null,
+  genError: null as GenError | null,
   genComplete: false,
 }
 
@@ -66,6 +87,9 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
     set((s) => ({ planChunks: [...s.planChunks, chunk] })),
   setPlanResult: (result) => set({ planResult: result }),
   setIsPlanning: (v) => set({ isPlanning: v }),
+  setMockHtml: (html, isPartial) => set({ mockHtml: html, isMockPartial: isPartial }),
+  setPipelineStatus: (stages, overallProgress, currentStage) =>
+    set({ pipelineStages: stages, pipelineOverallProgress: overallProgress, pipelineCurrentStage: currentStage }),
   setGenProgress: (p) => set({ genProgress: p }),
   setIsGenerating: (v) => set({ isGenerating: v }),
   setGenError: (e) => set({ genError: e }),
@@ -108,12 +132,56 @@ export const useGenerationStore = create<GenerationStore>((set, get) => ({
     }
   },
 
+  requestMock: async () => {
+    const { sessionId } = get()
+    if (!sessionId) return
+    set({ mockHtml: '', isMockPartial: true, phase: 3, genError: null })
+    try {
+      await window.intentOS.generation.requestMock({ sessionId })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      set({ genError: { message, code: 'MOCK_REQUEST_FAILED' } })
+      throw err
+    }
+  },
+
+  reviseMock: async (feedback) => {
+    const { sessionId } = get()
+    if (!sessionId) return
+    set({ mockHtml: '', isMockPartial: true, genError: null })
+    try {
+      await window.intentOS.generation.reviseMock({ sessionId, feedback })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      set({ genError: { message, code: 'MOCK_REVISE_FAILED' } })
+      throw err
+    }
+  },
+
+  approveMock: async () => {
+    const { sessionId } = get()
+    if (!sessionId) return
+    try {
+      await window.intentOS.generation.approveMock({ sessionId })
+      // After approving mock, transition to phase 4 (pipeline progress)
+      // The actual pipeline will be started by confirmGenerate
+      set({ phase: 4 })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      set({ genError: { message, code: 'MOCK_APPROVE_FAILED' } })
+      throw err
+    }
+  },
+
   confirmGenerate: async (appName) => {
     const { sessionId } = get()
     if (!sessionId) return
-    set({ isGenerating: true, genError: null, phase: 3 })
+    set({ isGenerating: true, genError: null, phase: 4 })
     try {
-      await window.intentOS.generation.confirmAndGenerate({ sessionId, appName })
+      // Call the pipeline-based generation (generation:start-pipeline)
+      // instead of the legacy generation:confirm-generate handler.
+      // The pipeline emits generation:pipeline-status events that drive PipelineProgressView.
+      await window.intentOS.generation.startPipeline({ sessionId, appName })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       set({
